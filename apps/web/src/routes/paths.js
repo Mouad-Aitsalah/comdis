@@ -9,4 +9,5 @@ export const ROUTE_PATHS = {
   REPORTS: "/reports",
   USERS: "/users",
   STORES: "/stores",
+  CUSTOMERS: "/customers",
 };

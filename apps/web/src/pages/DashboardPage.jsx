@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import api from "../services/api";
 import Badge from "../components/Badge";
 import DataTable from "../components/DataTable";
+import Modal from "../components/Modal";
 import PageHeader from "../components/PageHeader";
 import SectionCard from "../components/SectionCard";
 import StatCard from "../components/StatCard";
@@ -17,23 +18,29 @@ const periodOptions = [
 function DashboardPage() {
   const [period, setPeriod] = useState("day");
   const [report, setReport] = useState(null);
+  const [alerts, setAlerts] = useState([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [isAlertsModalOpen, setIsAlertsModalOpen] = useState(false);
   const [errorMessage, setErrorMessage] = useState("");
 
   useEffect(() => {
     let isMounted = true;
 
-    async function fetchReport() {
+    async function fetchDashboardData() {
       try {
         setIsLoading(true);
         setErrorMessage("");
 
-        const response = await api.get("/reports", {
-          params: { period },
-        });
+        const [reportResponse, alertsResponse] = await Promise.all([
+          api.get("/reports", {
+            params: { period },
+          }),
+          api.get("/stocks/alerts"),
+        ]);
 
         if (isMounted) {
-          setReport(response.data);
+          setReport(reportResponse.data);
+          setAlerts(Array.isArray(alertsResponse.data) ? alertsResponse.data : []);
         }
       } catch (error) {
         if (isMounted) {
@@ -49,12 +56,16 @@ function DashboardPage() {
       }
     }
 
-    fetchReport();
+    fetchDashboardData();
 
     return () => {
       isMounted = false;
     };
   }, [period]);
+
+  const lowStockCount = alerts.length;
+  const criticalStockCount = alerts.filter((alert) => alert.severity === "critical").length;
+  const warningStockCount = lowStockCount - criticalStockCount;
 
   const stats = useMemo(
     () => [
@@ -86,8 +97,17 @@ function DashboardPage() {
         detail: "Point de vente le plus performant.",
         tone: "warning",
       },
+      {
+        label: "Alertes Stock",
+        value: isLoading ? "Chargement..." : lowStockCount,
+        detail:
+          isLoading
+            ? "Analyse des seuils en cours."
+            : `${lowStockCount} produits en stock faible`,
+        tone: criticalStockCount > 0 ? "danger" : "warning",
+      },
     ],
-    [isLoading, report]
+    [criticalStockCount, isLoading, lowStockCount, report]
   );
 
   const topProducts = useMemo(
@@ -110,20 +130,27 @@ function DashboardPage() {
         title="Dashboard"
         description="Suivre la performance commerciale et les indicateurs cles du reseau en temps reel."
         actions={
-          <div className="period-selector">
-            {periodOptions.map((option) => (
-              <button
-                key={option.key}
-                className={`period-button ${
-                  period === option.key ? "active" : ""
-                }`}
-                type="button"
-                onClick={() => setPeriod(option.key)}
-              >
-                {option.label}
-              </button>
-            ))}
-          </div>
+          <>
+            <div className="period-selector">
+              {periodOptions.map((option) => (
+                <button
+                  key={option.key}
+                  className={`period-button ${period === option.key ? "active" : ""}`}
+                  type="button"
+                  onClick={() => setPeriod(option.key)}
+                >
+                  {option.label}
+                </button>
+              ))}
+            </div>
+            <button
+              className="ghost-button"
+              type="button"
+              onClick={() => setIsAlertsModalOpen(true)}
+            >
+              Voir alertes
+            </button>
+          </>
         }
       />
 
@@ -213,9 +240,7 @@ function DashboardPage() {
                 <span>Valeur moyenne observee sur la periode.</span>
               </div>
               <Badge tone="neutral">
-                {isLoading
-                  ? "..."
-                  : formatCurrencyDh(report?.averageBasket || 0)}
+                {isLoading ? "..." : formatCurrencyDh(report?.averageBasket || 0)}
               </Badge>
             </div>
           </div>
@@ -247,9 +272,96 @@ function DashboardPage() {
                 {isLoading ? "..." : topProducts[0]?.unitsSold || 0}
               </Badge>
             </div>
+
+            <div className="alert-item">
+              <div>
+                <strong>Stock critique</strong>
+                <span>Produits a zero necessitant un reapprovisionnement.</span>
+              </div>
+              <Badge tone={criticalStockCount > 0 ? "stock-critical" : "neutral"}>
+                {isLoading ? "..." : criticalStockCount}
+              </Badge>
+            </div>
           </div>
         </SectionCard>
       </div>
+
+      <Modal
+        isOpen={isAlertsModalOpen}
+        eyebrow="Surveillance stock"
+        title="Alertes de stock"
+        description="Liste des produits dont la quantite est inferieure ou egale au seuil minimum."
+        onClose={() => setIsAlertsModalOpen(false)}
+        cardClassName="modal-large stock-alert-modal"
+        headerClassName="stock-alert-modal-header"
+        bodyClassName="stock-alert-modal-body"
+        actionsClassName="stock-alert-modal-actions"
+        actions={
+          <button
+            className="ghost-button"
+            type="button"
+            onClick={() => setIsAlertsModalOpen(false)}
+          >
+            Fermer
+          </button>
+        }
+      >
+        <div className="stock-alert-summary">
+          <div className="stock-alert-summary-card critical">
+            <span>Produits en rupture</span>
+            <strong>{isLoading ? "..." : criticalStockCount}</strong>
+          </div>
+          <div className="stock-alert-summary-card warning">
+            <span>Produits en stock faible</span>
+            <strong>{isLoading ? "..." : warningStockCount}</strong>
+          </div>
+        </div>
+
+        <div className="stock-alert-table-wrap">
+          <DataTable
+            columns={[
+              { key: "product", label: "Produit" },
+              { key: "store", label: "Magasin" },
+              { key: "quantity", label: "Quantite" },
+              { key: "minimumThreshold", label: "Seuil minimum" },
+              { key: "status", label: "Statut" },
+            ]}
+            data={alerts}
+            emptyTitle={isLoading ? "Chargement..." : "Aucune alerte active"}
+            emptyDescription={
+              isLoading
+                ? "Recuperation des alertes en cours."
+                : "Tous les produits sont au-dessus du seuil minimum."
+            }
+            renderRow={(item) => (
+              <tr
+                key={`${item.produitId}-${item.magasinId}`}
+                className={
+                  item.severity === "critical"
+                    ? "stock-row-critical stock-alert-critical"
+                    : "stock-row-warning"
+                }
+              >
+                <td>{item.produitNom}</td>
+                <td>{item.magasin}</td>
+                <td>{item.quantite}</td>
+                <td>{item.seuilMinimum}</td>
+                <td>
+                  <Badge
+                    tone={
+                      item.severity === "critical"
+                        ? "stock-critical"
+                        : "stock-warning"
+                    }
+                  >
+                    {item.severity === "critical" ? "Stock critique" : "Stock faible"}
+                  </Badge>
+                </td>
+              </tr>
+            )}
+          />
+        </div>
+      </Modal>
     </div>
   );
 }

@@ -36,6 +36,7 @@ const authMiddleware = async (req, res, next) => {
         role: true,
         estActif: true,
         pointDeVenteId: true,
+        caisseId: true,
         createdAt: true,
         updatedAt: true,
       },

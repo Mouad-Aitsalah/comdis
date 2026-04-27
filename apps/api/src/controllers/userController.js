@@ -1,5 +1,10 @@
-const bcrypt = require("bcrypt");
+const bcrypt = require("bcryptjs");
 const prisma = require("../config/prisma");
+const { validateSchema } = require("../utils/validation");
+const {
+  userCreateSchema,
+  userUpdateSchema,
+} = require("../utils/validationSchemas");
 
 const parseId = (value) => {
   const parsedValue = Number(value);
@@ -42,6 +47,7 @@ const userSelect = {
   role: true,
   estActif: true,
   pointDeVenteId: true,
+  caisseId: true,
   createdAt: true,
   updatedAt: true,
   pointDeVente: {
@@ -52,16 +58,35 @@ const userSelect = {
       telephone: true,
     },
   },
+  caisse: {
+    select: {
+      id: true,
+      nom: true,
+      code: true,
+      estActive: true,
+      pointDeVenteId: true,
+    },
+  },
 };
+
+const mapRoleForApi = (role) => (role === "ADMIN" ? "admin" : "employe");
 
 const formatUser = (user) => ({
   id: user.id,
   nom: user.nom,
+  name: user.nom,
   email: user.email,
-  role: user.role,
+  role: mapRoleForApi(user.role),
+  roleCode: user.role,
   estActif: user.estActif,
   pointDeVenteId: user.pointDeVenteId,
+  storeId: user.pointDeVenteId,
   pointDeVente: user.pointDeVente || null,
+  storeName: user.pointDeVente ? user.pointDeVente.nom : null,
+  caisseId: user.caisseId,
+  cashRegisterId: user.caisseId,
+  caisse: user.caisse || null,
+  cashRegisterName: user.caisse ? user.caisse.nom : null,
   createdAt: user.createdAt,
   updatedAt: user.updatedAt,
 });
@@ -120,7 +145,8 @@ const getUserById = async (req, res) => {
 
 const createUser = async (req, res) => {
   try {
-    const { nom, email, motDePasse, role, estActif, pointDeVenteId } = req.body;
+    const parsedInput = validateSchema(userCreateSchema, req.body);
+    const { nom, email, motDePasse, role, estActif, pointDeVenteId, caisseId } = parsedInput;
 
     const normalizedNom = String(nom || "").trim();
     const normalizedEmail = String(email || "").toLowerCase().trim();
@@ -128,6 +154,7 @@ const createUser = async (req, res) => {
     const normalizedRole = role || "EMPLOYE";
     const parsedEstActif = parseOptionalBoolean(estActif, true);
     const parsedPointDeVenteId = parseOptionalInteger(pointDeVenteId);
+    const parsedCaisseId = parseOptionalInteger(caisseId);
 
     if (!normalizedNom || !normalizedEmail || !rawPassword.trim()) {
       return res.status(400).json({
@@ -153,9 +180,21 @@ const createUser = async (req, res) => {
       });
     }
 
+    if (Number.isNaN(parsedCaisseId)) {
+      return res.status(400).json({
+        message: "caisseId doit etre un entier valide.",
+      });
+    }
+
     if (normalizedRole === "EMPLOYE" && !parsedPointDeVenteId) {
       return res.status(400).json({
         message: "Un employe doit etre rattache a un point de vente.",
+      });
+    }
+
+    if (normalizedRole === "EMPLOYE" && !parsedCaisseId) {
+      return res.status(400).json({
+        message: "Un employe doit etre rattache a une caisse.",
       });
     }
 
@@ -181,6 +220,35 @@ const createUser = async (req, res) => {
       }
     }
 
+    if (parsedCaisseId) {
+      const caisse = await prisma.caisse.findUnique({
+        where: { id: parsedCaisseId },
+        select: {
+          id: true,
+          pointDeVenteId: true,
+          estActive: true,
+        },
+      });
+
+      if (!caisse) {
+        return res.status(404).json({
+          message: "Caisse introuvable.",
+        });
+      }
+
+      if (parsedPointDeVenteId && caisse.pointDeVenteId !== parsedPointDeVenteId) {
+        return res.status(400).json({
+          message: "La caisse selectionnee n'appartient pas au point de vente choisi.",
+        });
+      }
+
+      if (!caisse.estActive) {
+        return res.status(400).json({
+          message: "La caisse selectionnee est inactive.",
+        });
+      }
+    }
+
     const hashedPassword = await bcrypt.hash(rawPassword, 10);
 
     const utilisateur = await prisma.utilisateur.create({
@@ -191,6 +259,7 @@ const createUser = async (req, res) => {
         role: normalizedRole,
         estActif: parsedEstActif,
         pointDeVenteId: parsedPointDeVenteId,
+        caisseId: parsedCaisseId,
       },
       select: userSelect,
     });
@@ -200,6 +269,12 @@ const createUser = async (req, res) => {
       user: formatUser(utilisateur),
     });
   } catch (error) {
+    if (error?.status) {
+      return res.status(error.status).json({
+        message: error.message,
+      });
+    }
+
     console.error("Create user error:", error);
     return res.status(500).json({
       message: "Erreur serveur lors de la creation de l'utilisateur.",
@@ -228,7 +303,8 @@ const updateUser = async (req, res) => {
       });
     }
 
-    const { nom, email, motDePasse, role, estActif, pointDeVenteId } = req.body;
+    const { nom, email, motDePasse, role, estActif, pointDeVenteId, caisseId } =
+      validateSchema(userUpdateSchema, req.body);
     const data = {};
 
     if (nom !== undefined) {
@@ -303,6 +379,7 @@ const updateUser = async (req, res) => {
     }
 
     let finalPointDeVenteId = existingUser.pointDeVenteId;
+    let finalCaisseId = existingUser.caisseId;
 
     if (pointDeVenteId !== undefined) {
       const parsedPointDeVenteId = parseOptionalInteger(pointDeVenteId);
@@ -316,9 +393,27 @@ const updateUser = async (req, res) => {
       finalPointDeVenteId = parsedPointDeVenteId;
     }
 
+    if (caisseId !== undefined) {
+      const parsedCaisseId = parseOptionalInteger(caisseId);
+
+      if (Number.isNaN(parsedCaisseId)) {
+        return res.status(400).json({
+          message: "caisseId doit etre un entier valide.",
+        });
+      }
+
+      finalCaisseId = parsedCaisseId;
+    }
+
     if (nextRole === "EMPLOYE" && !finalPointDeVenteId) {
       return res.status(400).json({
         message: "Un employe doit etre rattache a un point de vente.",
+      });
+    }
+
+    if (nextRole === "EMPLOYE" && !finalCaisseId) {
+      return res.status(400).json({
+        message: "Un employe doit etre rattache a une caisse.",
       });
     }
 
@@ -334,7 +429,37 @@ const updateUser = async (req, res) => {
       }
     }
 
+    if (finalCaisseId) {
+      const caisse = await prisma.caisse.findUnique({
+        where: { id: finalCaisseId },
+        select: {
+          id: true,
+          pointDeVenteId: true,
+          estActive: true,
+        },
+      });
+
+      if (!caisse) {
+        return res.status(404).json({
+          message: "Caisse introuvable.",
+        });
+      }
+
+      if (finalPointDeVenteId && caisse.pointDeVenteId !== finalPointDeVenteId) {
+        return res.status(400).json({
+          message: "La caisse selectionnee n'appartient pas au point de vente choisi.",
+        });
+      }
+
+      if (!caisse.estActive) {
+        return res.status(400).json({
+          message: "La caisse selectionnee est inactive.",
+        });
+      }
+    }
+
     data.pointDeVenteId = finalPointDeVenteId;
+    data.caisseId = finalCaisseId;
 
     const utilisateur = await prisma.utilisateur.update({
       where: { id: userId },
@@ -347,6 +472,12 @@ const updateUser = async (req, res) => {
       user: formatUser(utilisateur),
     });
   } catch (error) {
+    if (error?.status) {
+      return res.status(error.status).json({
+        message: error.message,
+      });
+    }
+
     console.error("Update user error:", error);
     return res.status(500).json({
       message: "Erreur serveur lors de la mise a jour de l'utilisateur.",

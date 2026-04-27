@@ -1,4 +1,9 @@
 const prisma = require("../config/prisma");
+const { validateSchema } = require("../utils/validation");
+const {
+  productCreateSchema,
+  productUpdateSchema,
+} = require("../utils/validationSchemas");
 
 const parseId = (value) => {
   const parsedValue = Number(value);
@@ -36,6 +41,24 @@ const parseOptionalNonNegativeInteger = (value) => {
 const parseRequiredNumber = (value) => {
   const parsedValue = Number(value);
   return Number.isFinite(parsedValue) ? parsedValue : NaN;
+};
+
+const normalizeInitialStocks = (value) => {
+  if (value === undefined || value === null || value === "") {
+    return [];
+  }
+
+  if (!Array.isArray(value)) {
+    return null;
+  }
+
+  return value.map((entry) => ({
+    storeId: parseOptionalPositiveInteger(entry?.storeId),
+    quantity:
+      entry?.quantity === undefined
+        ? 0
+        : parseOptionalNonNegativeInteger(entry?.quantity),
+  }));
 };
 
 const parseOptionalBoolean = (value, defaultValue = true) => {
@@ -132,23 +155,11 @@ const createProduct = async (req, res) => {
       seuilMinimum,
       estActif,
       fournisseurId,
-    } = req.body;
+      initialStocks,
+    } = validateSchema(productCreateSchema, req.body);
     const normalizedCodeBarres = normalizeRequiredString(codeBarres);
     const normalizedNom = normalizeRequiredString(nom);
     const normalizedCategorie = normalizeRequiredString(categorie);
-
-    if (
-      !normalizedCodeBarres ||
-      !normalizedNom ||
-      !normalizedCategorie ||
-      prixAchat === undefined ||
-      prixVente === undefined
-    ) {
-      return res.status(400).json({
-        message:
-          "codeBarres, nom, categorie, prixAchat et prixVente sont obligatoires.",
-      });
-    }
 
     const parsedPrixAchat = parseRequiredNumber(prixAchat);
     const parsedPrixVente = parseRequiredNumber(prixVente);
@@ -156,12 +167,7 @@ const createProduct = async (req, res) => {
       seuilMinimum === undefined ? 0 : parseOptionalNonNegativeInteger(seuilMinimum);
     const parsedEstActif = parseOptionalBoolean(estActif, true);
     const parsedFournisseurId = parseOptionalPositiveInteger(fournisseurId);
-
-    if (Number.isNaN(parsedPrixAchat) || Number.isNaN(parsedPrixVente)) {
-      return res.status(400).json({
-        message: "prixAchat et prixVente doivent etre des nombres valides.",
-      });
-    }
+    const normalizedInitialStocks = normalizeInitialStocks(initialStocks);
 
     if (
       Number.isNaN(parsedSeuilMinimum) ||
@@ -182,6 +188,43 @@ const createProduct = async (req, res) => {
     if (Number.isNaN(parsedFournisseurId)) {
       return res.status(400).json({
         message: "fournisseurId doit etre un entier valide.",
+      });
+    }
+
+    if (normalizedInitialStocks === null) {
+      return res.status(400).json({
+        message: "initialStocks doit etre un tableau valide.",
+      });
+    }
+
+    if (
+      normalizedInitialStocks.some(
+        (entry) =>
+          Number.isNaN(entry.storeId) ||
+          entry.storeId === null ||
+          Number.isNaN(entry.quantity) ||
+          entry.quantity === null
+      )
+    ) {
+      return res.status(400).json({
+        message:
+          "Chaque stock initial doit contenir un storeId valide et une quantite superieure ou egale a 0.",
+      });
+    }
+
+    const duplicateStoreIds = normalizedInitialStocks.reduce((duplicates, entry, index, array) => {
+      if (array.findIndex((item) => item.storeId === entry.storeId) !== index) {
+        duplicates.add(entry.storeId);
+      }
+
+      return duplicates;
+    }, new Set());
+
+    if (duplicateStoreIds.size > 0) {
+      return res.status(400).json({
+        message: `Les stocks initiaux contiennent des points de vente en doublon: ${Array.from(
+          duplicateStoreIds
+        ).join(", ")}.`,
       });
     }
 
@@ -207,18 +250,59 @@ const createProduct = async (req, res) => {
       }
     }
 
-    const produit = await prisma.produit.create({
-      data: {
-        codeBarres: normalizedCodeBarres,
-        nom: normalizedNom,
-        categorie: normalizedCategorie,
-        prixAchat: parsedPrixAchat,
-        prixVente: parsedPrixVente,
-        seuilMinimum: parsedSeuilMinimum,
-        estActif: parsedEstActif,
-        fournisseurId: parsedFournisseurId,
-      },
-      include: productInclude,
+    const produit = await prisma.$transaction(async (tx) => {
+      const pointsDeVente = await tx.pointDeVente.findMany({
+        select: {
+          id: true,
+        },
+        orderBy: {
+          id: "asc",
+        },
+      });
+
+      const requestedStoreIds = normalizedInitialStocks.map((entry) => entry.storeId);
+      const existingStoreIds = new Set(pointsDeVente.map((pointDeVente) => pointDeVente.id));
+      const missingStoreIds = requestedStoreIds.filter((storeId) => !existingStoreIds.has(storeId));
+
+      if (missingStoreIds.length > 0) {
+        throw {
+          status: 404,
+          message: `Points de vente introuvables pour les stocks initiaux: ${missingStoreIds.join(
+            ", "
+          )}.`,
+        };
+      }
+
+      const produitCree = await tx.produit.create({
+        data: {
+          codeBarres: normalizedCodeBarres,
+          nom: normalizedNom,
+          categorie: normalizedCategorie,
+          prixAchat: parsedPrixAchat,
+          prixVente: parsedPrixVente,
+          seuilMinimum: parsedSeuilMinimum,
+          estActif: parsedEstActif,
+          fournisseurId: parsedFournisseurId,
+        },
+      });
+
+      const quantityByStoreId = new Map(
+        normalizedInitialStocks.map((entry) => [entry.storeId, entry.quantity ?? 0])
+      );
+
+      await tx.stock.createMany({
+        data: pointsDeVente.map((pointDeVente) => ({
+          produitId: produitCree.id,
+          pointDeVenteId: pointDeVente.id,
+          quantite: quantityByStoreId.get(pointDeVente.id) ?? 0,
+        })),
+        skipDuplicates: true,
+      });
+
+      return tx.produit.findUnique({
+        where: { id: produitCree.id },
+        include: productInclude,
+      });
     });
 
     return res.status(201).json({
@@ -226,6 +310,12 @@ const createProduct = async (req, res) => {
       product: produit,
     });
   } catch (error) {
+    if (error?.status) {
+      return res.status(error.status).json({
+        message: error.message,
+      });
+    }
+
     console.error("Create product error:", error);
     return res.status(500).json({
       message: "Erreur serveur lors de la creation du produit.",
@@ -262,7 +352,7 @@ const updateProduct = async (req, res) => {
       seuilMinimum,
       estActif,
       fournisseurId,
-    } = req.body;
+    } = validateSchema(productUpdateSchema, req.body);
 
     const data = {};
 
@@ -305,23 +395,11 @@ const updateProduct = async (req, res) => {
     if (prixAchat !== undefined) {
       const parsedPrixAchat = parseRequiredNumber(prixAchat);
 
-      if (Number.isNaN(parsedPrixAchat)) {
-        return res.status(400).json({
-          message: "prixAchat doit etre un nombre valide.",
-        });
-      }
-
       data.prixAchat = parsedPrixAchat;
     }
 
     if (prixVente !== undefined) {
       const parsedPrixVente = parseRequiredNumber(prixVente);
-
-      if (Number.isNaN(parsedPrixVente)) {
-        return res.status(400).json({
-          message: "prixVente doit etre un nombre valide.",
-        });
-      }
 
       data.prixVente = parsedPrixVente;
     }
@@ -406,6 +484,12 @@ const updateProduct = async (req, res) => {
       product: produit,
     });
   } catch (error) {
+    if (error?.status) {
+      return res.status(error.status).json({
+        message: error.message,
+      });
+    }
+
     console.error("Update product error:", error);
     return res.status(500).json({
       message: "Erreur serveur lors de la mise a jour du produit.",

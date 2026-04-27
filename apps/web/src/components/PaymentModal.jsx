@@ -5,7 +5,7 @@ import { formatCurrencyDh } from "../utils/formatters";
 const paymentOptions = [
   { label: "Especes", value: "cash" },
   { label: "Carte bancaire", value: "card" },
-  { label: "Mobile", value: "mobile" },
+  { label: "Credit", value: "credit" },
 ];
 
 function PaymentModal({
@@ -36,7 +36,7 @@ function PaymentModal({
       isOpen={isOpen}
       eyebrow="Validation paiement"
       title="Confirmer la transaction"
-      description="Simulation d'encaissement avant integration backend."
+      description="Confirmation finale avant enregistrement de la vente."
       onClose={handleClose}
       actions={
         <>
@@ -85,6 +85,12 @@ function PaymentModal({
             </button>
           ))}
         </div>
+
+        {paymentMethod === "credit" ? (
+          <div className="inline-notice warning">
+            ⚠️ Le montant sera ajoute au credit du client.
+          </div>
+        ) : null}
     </Modal>
   );
 }

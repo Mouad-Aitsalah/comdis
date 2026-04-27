@@ -1,6 +1,7 @@
 import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
 import MainLayout from "./layouts/MainLayout";
 import DashboardPage from "./pages/DashboardPage";
+import CustomersPage from "./pages/CustomersPage";
 import LoginPage from "./pages/LoginPage";
 import PosPage from "./pages/PosPage";
 import ProductsPage from "./pages/ProductsPage";
@@ -32,6 +33,7 @@ function App() {
             <Route path={ROUTE_PATHS.REPORTS} element={<ReportsPage />} />
             <Route path={ROUTE_PATHS.USERS} element={<UsersPage />} />
             <Route path={ROUTE_PATHS.STORES} element={<StoresPage />} />
+            <Route path={ROUTE_PATHS.CUSTOMERS} element={<CustomersPage />} />
           </Route>
         </Route>
 

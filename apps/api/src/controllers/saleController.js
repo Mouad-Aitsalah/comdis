@@ -48,6 +48,14 @@ const saleInclude = {
       telephone: true,
     },
   },
+  caisse: {
+    select: {
+      id: true,
+      nom: true,
+      code: true,
+      estActive: true,
+    },
+  },
   utilisateur: {
     select: {
       id: true,
@@ -55,6 +63,7 @@ const saleInclude = {
       email: true,
       role: true,
       pointDeVenteId: true,
+      caisseId: true,
     },
   },
   lignes: {
@@ -82,6 +91,9 @@ const formatDecimal = (value) =>
 const formatSaleResponse = (sale) => ({
   ...sale,
   total: formatDecimal(sale.total),
+  caisseId: sale.caisseId,
+  cashRegisterId: sale.caisseId,
+  cashRegisterName: sale.caisse ? sale.caisse.nom : null,
   lignes: sale.lignes.map((ligne) => ({
     ...ligne,
     prixUnitaire: formatDecimal(ligne.prixUnitaire),
@@ -193,14 +205,22 @@ const getSaleById = async (req, res) => {
 
 const createSale = async (req, res) => {
   try {
-    const pointDeVenteId = parseId(req.body.pointDeVenteId);
-    const utilisateurId = parseId(req.body.utilisateurId);
+    const requestedPointDeVenteId = parseId(
+      req.body.pointDeVenteId ?? req.body.storeId
+    );
+    const requestedCaisseId = parseId(req.body.caisseId ?? req.body.cashRegisterId);
+    const requestedUtilisateurId = parseId(req.body.utilisateurId ?? req.body.userId);
     const paymentMethod = normalizePaymentMethod(req.body.paymentMethod);
     const items = normalizeItems(req.body.items);
+    const pointDeVenteId =
+      req.user.role === "EMPLOYE" ? req.user.pointDeVenteId : requestedPointDeVenteId;
+    const caisseId = req.user.role === "EMPLOYE" ? req.user.caisseId : requestedCaisseId;
+    const utilisateurId = req.user.id;
 
-    if (!pointDeVenteId || !utilisateurId) {
+    if (!pointDeVenteId || !caisseId) {
       return res.status(400).json({
-        message: "pointDeVenteId et utilisateurId doivent etre valides.",
+        message:
+          "pointDeVenteId/storeId et caisseId/cashRegisterId doivent etre valides.",
       });
     }
 
@@ -213,10 +233,20 @@ const createSale = async (req, res) => {
 
     if (
       req.user.role === "EMPLOYE" &&
-      (req.user.id !== utilisateurId || req.user.pointDeVenteId !== pointDeVenteId)
+      (!req.user.pointDeVenteId ||
+        !req.user.caisseId ||
+        req.user.pointDeVenteId !== pointDeVenteId ||
+        req.user.caisseId !== caisseId)
     ) {
       return res.status(403).json({
-        message: "Un employe ne peut creer une vente que pour lui-meme et son point de vente.",
+        message:
+          "Un employe ne peut creer une vente que pour lui-meme, son point de vente et sa caisse.",
+      });
+    }
+
+    if (requestedUtilisateurId && requestedUtilisateurId !== req.user.id) {
+      return res.status(403).json({
+        message: "Une vente doit etre creee avec l'utilisateur authentifie.",
       });
     }
 
@@ -232,6 +262,30 @@ const createSale = async (req, res) => {
         throw createHttpError(404, "Point de vente introuvable.");
       }
 
+      const caisse = await tx.caisse.findUnique({
+        where: { id: caisseId },
+        select: {
+          id: true,
+          pointDeVenteId: true,
+          estActive: true,
+        },
+      });
+
+      if (!caisse) {
+        throw createHttpError(404, "Caisse introuvable.");
+      }
+
+      if (caisse.pointDeVenteId !== pointDeVenteId) {
+        throw createHttpError(
+          400,
+          "La caisse selectionnee n'appartient pas au point de vente selectionne."
+        );
+      }
+
+      if (!caisse.estActive) {
+        throw createHttpError(400, "La caisse selectionnee est inactive.");
+      }
+
       const utilisateur = await tx.utilisateur.findUnique({
         where: { id: utilisateurId },
         select: {
@@ -239,6 +293,7 @@ const createSale = async (req, res) => {
           role: true,
           estActif: true,
           pointDeVenteId: true,
+          caisseId: true,
         },
       });
 
@@ -254,6 +309,13 @@ const createSale = async (req, res) => {
         throw createHttpError(
           400,
           "Cet utilisateur n'appartient pas au point de vente selectionne."
+        );
+      }
+
+      if (utilisateur.role === "EMPLOYE" && utilisateur.caisseId !== caisseId) {
+        throw createHttpError(
+          400,
+          "Cet utilisateur n'est pas rattache a la caisse selectionnee."
         );
       }
 
@@ -347,6 +409,7 @@ const createSale = async (req, res) => {
           total,
           paymentMethod,
           pointDeVenteId,
+          caisseId,
           utilisateurId,
           lignes: {
             create: lignesData,

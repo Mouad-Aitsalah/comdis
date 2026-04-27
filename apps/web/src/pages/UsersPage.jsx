@@ -2,28 +2,124 @@ import { useEffect, useMemo, useState } from "react";
 import api from "../services/api";
 import Badge from "../components/Badge";
 import DataTable from "../components/DataTable";
+import Modal from "../components/Modal";
 import PageHeader from "../components/PageHeader";
 import SearchInput from "../components/SearchInput";
 import SectionCard from "../components/SectionCard";
 
+const createInitialEditFormData = (user = null) => ({
+  nom: user?.name || user?.nom || "",
+  email: user?.email || "",
+  role: user?.role === "admin" ? "admin" : "employe",
+});
+
+const createInitialAddFormData = () => ({
+  nom: "",
+  email: "",
+  motDePasse: "",
+  role: "employe",
+  pointDeVenteId: "",
+  caisseId: "",
+  estActif: true,
+});
+
+const createInitialEditModal = () => ({
+  isOpen: false,
+  user: null,
+});
+
+const getCollection = (payload, keys = []) => {
+  if (Array.isArray(payload)) {
+    return payload;
+  }
+
+  for (const key of keys) {
+    if (Array.isArray(payload?.[key])) {
+      return payload[key];
+    }
+  }
+
+  return [];
+};
+
+const getUsersCollection = (payload) => getCollection(payload, ["data", "users"]);
+const getStoresCollection = (payload) => getCollection(payload, ["data", "stores"]);
+const getCashRegistersCollection = (payload) =>
+  getCollection(payload, ["data", "cashRegisters"]);
+
+const getUserWriteUrl = () =>
+  api.defaults.baseURL?.replace(/\/api\/?$/, "/users") || "/users";
+
+const buildUserUpdatePayload = (formData) => ({
+  nom: formData.nom.trim(),
+  email: formData.email.trim(),
+  role: formData.role === "admin" ? "ADMIN" : "EMPLOYE",
+});
+
+const buildUserCreatePayload = (formData) => ({
+  nom: formData.nom.trim(),
+  email: formData.email.trim(),
+  motDePasse: formData.motDePasse,
+  role: formData.role === "admin" ? "ADMIN" : "EMPLOYE",
+  pointDeVenteId: formData.pointDeVenteId ? Number(formData.pointDeVenteId) : null,
+  caisseId: formData.caisseId ? Number(formData.caisseId) : null,
+  estActif: formData.estActif,
+});
+
 function UsersPage() {
   const [searchTerm, setSearchTerm] = useState("");
   const [users, setUsers] = useState([]);
+  const [stores, setStores] = useState([]);
+  const [cashRegisters, setCashRegisters] = useState([]);
   const [isLoading, setIsLoading] = useState(true);
   const [errorMessage, setErrorMessage] = useState("");
+  const [notice, setNotice] = useState({ type: "", message: "" });
+  const [editModal, setEditModal] = useState(createInitialEditModal);
+  const [editFormData, setEditFormData] = useState(createInitialEditFormData);
+  const [editModalError, setEditModalError] = useState("");
+  const [isSubmittingEdit, setIsSubmittingEdit] = useState(false);
+  const [isAddModalOpen, setIsAddModalOpen] = useState(false);
+  const [addFormData, setAddFormData] = useState(createInitialAddFormData);
+  const [addModalError, setAddModalError] = useState("");
+  const [storesError, setStoresError] = useState("");
+  const [cashRegistersError, setCashRegistersError] = useState("");
+  const [isSubmittingAdd, setIsSubmittingAdd] = useState(false);
+  const [isLoadingStores, setIsLoadingStores] = useState(false);
+  const [isLoadingCashRegisters, setIsLoadingCashRegisters] = useState(false);
+
+  const fetchUsers = async () => {
+    const response = await api.get("/users");
+    setUsers(getUsersCollection(response.data));
+  };
+
+  const fetchStores = async () => {
+    const response = await api.get("/stores");
+    const list = getStoresCollection(response.data);
+    setStores(list);
+    setStoresError("");
+    return list;
+  };
+
+  const fetchCashRegisters = async (storeId) => {
+    const response = await api.get("/cash-registers", {
+      params: { storeId },
+    });
+    const list = getCashRegistersCollection(response.data);
+    setCashRegisters(list);
+    setCashRegistersError("");
+    return list;
+  };
 
   useEffect(() => {
     let isMounted = true;
 
-    async function fetchUsers() {
+    async function loadUsers() {
       try {
         setIsLoading(true);
         setErrorMessage("");
 
         const response = await api.get("/users");
-        const list = Array.isArray(response.data)
-          ? response.data
-          : response.data?.data || [];
+        const list = getUsersCollection(response.data);
 
         if (isMounted) {
           setUsers(list);
@@ -42,12 +138,71 @@ function UsersPage() {
       }
     }
 
-    fetchUsers();
+    loadUsers();
 
     return () => {
       isMounted = false;
     };
   }, []);
+
+  useEffect(() => {
+    if (!isAddModalOpen || addFormData.role !== "employe") {
+      setCashRegisters([]);
+      setCashRegistersError("");
+      return;
+    }
+
+    if (!addFormData.pointDeVenteId) {
+      setCashRegisters([]);
+      setCashRegistersError("");
+      setAddFormData((current) =>
+        current.caisseId ? { ...current, caisseId: "" } : current
+      );
+      return;
+    }
+
+    let isMounted = true;
+
+    async function loadCashRegisters() {
+      try {
+        setIsLoadingCashRegisters(true);
+        setCashRegistersError("");
+
+        const list = await fetchCashRegisters(Number(addFormData.pointDeVenteId));
+
+        if (!isMounted) {
+          return;
+        }
+
+        setAddFormData((current) => ({
+          ...current,
+          caisseId: list.some(
+            (cashRegister) => String(cashRegister.id) === String(current.caisseId)
+          )
+            ? current.caisseId
+            : "",
+        }));
+      } catch (error) {
+        if (isMounted) {
+          setCashRegisters([]);
+          setCashRegistersError(
+            error.response?.data?.message ||
+              "Impossible de charger les caisses pour ce magasin."
+          );
+        }
+      } finally {
+        if (isMounted) {
+          setIsLoadingCashRegisters(false);
+        }
+      }
+    }
+
+    loadCashRegisters();
+
+    return () => {
+      isMounted = false;
+    };
+  }, [isAddModalOpen, addFormData.pointDeVenteId, addFormData.role]);
 
   const filteredUsers = useMemo(
     () =>
@@ -69,6 +224,230 @@ function UsersPage() {
     [searchTerm, users]
   );
 
+  const openEditModal = (user) => {
+    setNotice({ type: "", message: "" });
+    setEditModalError("");
+    setEditFormData(createInitialEditFormData(user));
+    setEditModal({
+      isOpen: true,
+      user,
+    });
+  };
+
+  const closeEditModal = () => {
+    if (isSubmittingEdit) {
+      return;
+    }
+
+    setEditModal(createInitialEditModal());
+    setEditFormData(createInitialEditFormData());
+    setEditModalError("");
+  };
+
+  const resetEditModal = () => {
+    setEditModal(createInitialEditModal());
+    setEditFormData(createInitialEditFormData());
+    setEditModalError("");
+  };
+
+  const openAddModal = async () => {
+    setNotice({ type: "", message: "" });
+    setAddModalError("");
+    setStoresError("");
+    setCashRegistersError("");
+    setCashRegisters([]);
+    setAddFormData(createInitialAddFormData());
+    setIsAddModalOpen(true);
+
+    if (stores.length) {
+      return;
+    }
+
+    try {
+      setIsLoadingStores(true);
+      await fetchStores();
+    } catch (error) {
+      setStores([]);
+      setStoresError(
+        error.response?.data?.message ||
+          "Impossible de charger les magasins pour le moment."
+      );
+    } finally {
+      setIsLoadingStores(false);
+    }
+  };
+
+  const closeAddModal = () => {
+    if (isSubmittingAdd) {
+      return;
+    }
+
+    setIsAddModalOpen(false);
+    setAddFormData(createInitialAddFormData());
+    setAddModalError("");
+    setStoresError("");
+    setCashRegistersError("");
+    setCashRegisters([]);
+  };
+
+  const resetAddModal = () => {
+    setIsAddModalOpen(false);
+    setAddFormData(createInitialAddFormData());
+    setAddModalError("");
+    setStoresError("");
+    setCashRegistersError("");
+    setCashRegisters([]);
+  };
+
+  const handleEditFormChange = (event) => {
+    const { name, value } = event.target;
+
+    setEditModalError("");
+    setEditFormData((current) => ({
+      ...current,
+      [name]: value,
+    }));
+  };
+
+  const handleAddFormChange = (event) => {
+    const { name, value, type, checked } = event.target;
+
+    setAddModalError("");
+
+    setAddFormData((current) => {
+      const nextValue = type === "checkbox" ? checked : value;
+      const nextState = {
+        ...current,
+        [name]: nextValue,
+      };
+
+      if (name === "role" && value === "admin") {
+        nextState.pointDeVenteId = "";
+        nextState.caisseId = "";
+      }
+
+      if (name === "pointDeVenteId" && value !== current.pointDeVenteId) {
+        nextState.caisseId = "";
+      }
+
+      return nextState;
+    });
+  };
+
+  const validateEditForm = () => {
+    if (!editFormData.nom.trim()) {
+      return "Le nom est obligatoire.";
+    }
+
+    if (!editFormData.email.trim()) {
+      return "L'email est obligatoire.";
+    }
+
+    if (!editFormData.role) {
+      return "Le role est obligatoire.";
+    }
+
+    return "";
+  };
+
+  const validateAddForm = () => {
+    if (!addFormData.nom.trim()) {
+      return "Le nom est obligatoire.";
+    }
+
+    if (!addFormData.email.trim()) {
+      return "L'email est obligatoire.";
+    }
+
+    if (!addFormData.motDePasse.trim()) {
+      return "Le mot de passe est obligatoire.";
+    }
+
+    if (!addFormData.role) {
+      return "Le role est obligatoire.";
+    }
+
+    if (addFormData.role === "employe" && !addFormData.pointDeVenteId) {
+      return "Le magasin est obligatoire pour un employe.";
+    }
+
+    if (addFormData.role === "employe" && !addFormData.caisseId) {
+      return "La caisse est obligatoire pour un employe.";
+    }
+
+    return "";
+  };
+
+  const handleSubmitEdit = async (event) => {
+    event.preventDefault();
+
+    const validationMessage = validateEditForm();
+
+    if (validationMessage) {
+      setEditModalError(validationMessage);
+      return;
+    }
+
+    if (!editModal.user?.id) {
+      setEditModalError("Utilisateur introuvable.");
+      return;
+    }
+
+    try {
+      setIsSubmittingEdit(true);
+      setEditModalError("");
+
+      await api.put(
+        `${getUserWriteUrl()}/${editModal.user.id}`,
+        buildUserUpdatePayload(editFormData)
+      );
+      await fetchUsers();
+      resetEditModal();
+      setNotice({
+        type: "success",
+        message: "Utilisateur modifie avec succes.",
+      });
+    } catch (error) {
+      setEditModalError(
+        error.response?.data?.message ||
+          "Impossible de modifier cet utilisateur pour le moment."
+      );
+    } finally {
+      setIsSubmittingEdit(false);
+    }
+  };
+
+  const handleSubmitAdd = async (event) => {
+    event.preventDefault();
+
+    const validationMessage = validateAddForm();
+
+    if (validationMessage) {
+      setAddModalError(validationMessage);
+      return;
+    }
+
+    try {
+      setIsSubmittingAdd(true);
+      setAddModalError("");
+
+      await api.post(getUserWriteUrl(), buildUserCreatePayload(addFormData));
+      await fetchUsers();
+      resetAddModal();
+      setNotice({
+        type: "success",
+        message: "Utilisateur ajoute avec succes.",
+      });
+    } catch (error) {
+      setAddModalError(
+        error.response?.data?.message ||
+          "Impossible d'ajouter cet utilisateur pour le moment."
+      );
+    } finally {
+      setIsSubmittingAdd(false);
+    }
+  };
+
   return (
     <div>
       <PageHeader
@@ -76,11 +455,15 @@ function UsersPage() {
         title="Gestion des utilisateurs"
         description="Suivre les comptes admin et employe, avec leur magasin d'affectation et leur statut."
         actions={
-          <button className="primary-button" type="button">
+          <button className="primary-button" type="button" onClick={openAddModal}>
             Ajouter utilisateur
           </button>
         }
       />
+
+      {notice.message ? (
+        <div className={`inline-notice ${notice.type}`}>{notice.message}</div>
+      ) : null}
 
       <SectionCard
         title="Liste des utilisateurs"
@@ -145,7 +528,11 @@ function UsersPage() {
                 </td>
                 <td>
                   <div className="table-action-row">
-                    <button className="table-action-button" type="button">
+                    <button
+                      className="table-action-button"
+                      type="button"
+                      onClick={() => openEditModal(user)}
+                    >
                       Edit
                     </button>
                     <button className="table-action-button danger" type="button">
@@ -158,6 +545,259 @@ function UsersPage() {
           }}
         />
       </SectionCard>
+
+      <Modal
+        isOpen={isAddModalOpen}
+        eyebrow="Nouvel utilisateur"
+        title="Ajouter un utilisateur"
+        description="Renseignez les informations du compte, le role et l'affectation si necessaire."
+        onClose={closeAddModal}
+        actions={
+          <>
+            <button
+              className="ghost-button"
+              type="button"
+              onClick={closeAddModal}
+              disabled={isSubmittingAdd}
+            >
+              Annuler
+            </button>
+            <button
+              className="primary-button"
+              type="submit"
+              form="add-user-form"
+              disabled={isSubmittingAdd}
+            >
+              {isSubmittingAdd ? "Ajout en cours..." : "Ajouter utilisateur"}
+            </button>
+          </>
+        }
+      >
+        <form className="form-grid" id="add-user-form" onSubmit={handleSubmitAdd}>
+          {addModalError ? (
+            <div className="inline-notice error">{addModalError}</div>
+          ) : null}
+
+          {storesError ? <div className="inline-notice error">{storesError}</div> : null}
+          {cashRegistersError ? (
+            <div className="inline-notice error">{cashRegistersError}</div>
+          ) : null}
+
+          <div className="field-group">
+            <label className="field-label" htmlFor="add-user-name">
+              Nom
+            </label>
+            <input
+              id="add-user-name"
+              className="text-input"
+              type="text"
+              name="nom"
+              value={addFormData.nom}
+              onChange={handleAddFormChange}
+              required
+            />
+          </div>
+
+          <div className="field-group">
+            <label className="field-label" htmlFor="add-user-email">
+              Email
+            </label>
+            <input
+              id="add-user-email"
+              className="text-input"
+              type="email"
+              name="email"
+              value={addFormData.email}
+              onChange={handleAddFormChange}
+              required
+            />
+          </div>
+
+          <div className="field-group">
+            <label className="field-label" htmlFor="add-user-password">
+              Mot de passe
+            </label>
+            <input
+              id="add-user-password"
+              className="text-input"
+              type="password"
+              name="motDePasse"
+              value={addFormData.motDePasse}
+              onChange={handleAddFormChange}
+              required
+            />
+          </div>
+
+          <div className="field-group">
+            <label className="field-label" htmlFor="add-user-role">
+              Role
+            </label>
+            <select
+              id="add-user-role"
+              className="text-input select-input"
+              name="role"
+              value={addFormData.role}
+              onChange={handleAddFormChange}
+              required
+            >
+              <option value="admin">admin</option>
+              <option value="employe">employe</option>
+            </select>
+          </div>
+
+          <div className="field-group">
+            <label className="field-label" htmlFor="add-user-store">
+              Magasin
+            </label>
+            <select
+              id="add-user-store"
+              className="text-input select-input"
+              name="pointDeVenteId"
+              value={addFormData.pointDeVenteId}
+              onChange={handleAddFormChange}
+              disabled={addFormData.role !== "employe" || isLoadingStores}
+            >
+              <option value="">
+                {addFormData.role === "admin"
+                  ? "Aucun magasin requis pour admin"
+                  : isLoadingStores
+                  ? "Chargement des magasins..."
+                  : "Selectionner un magasin"}
+              </option>
+              {stores.map((store) => (
+                <option key={store.id} value={store.id}>
+                  {store.name}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div className="field-group">
+            <label className="field-label" htmlFor="add-user-cash-register">
+              Caisse
+            </label>
+            <select
+              id="add-user-cash-register"
+              className="text-input select-input"
+              name="caisseId"
+              value={addFormData.caisseId}
+              onChange={handleAddFormChange}
+              disabled={
+                addFormData.role !== "employe" ||
+                !addFormData.pointDeVenteId ||
+                isLoadingCashRegisters
+              }
+            >
+              <option value="">
+                {addFormData.role === "admin"
+                  ? "Aucune caisse requise pour admin"
+                  : !addFormData.pointDeVenteId
+                  ? "Choisir d'abord un magasin"
+                  : isLoadingCashRegisters
+                  ? "Chargement des caisses..."
+                  : "Selectionner une caisse"}
+              </option>
+              {cashRegisters.map((cashRegister) => (
+                <option key={cashRegister.id} value={cashRegister.id}>
+                  {cashRegister.name}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <label className="checkbox-field" htmlFor="add-user-active">
+            <input
+              id="add-user-active"
+              type="checkbox"
+              name="estActif"
+              checked={addFormData.estActif}
+              onChange={handleAddFormChange}
+            />
+            <span>Statut actif</span>
+          </label>
+        </form>
+      </Modal>
+
+      <Modal
+        isOpen={editModal.isOpen}
+        eyebrow="Edition utilisateur"
+        title="Modifier l'utilisateur"
+        description="Mettez a jour le nom, l'email et le role de l'utilisateur selectionne."
+        onClose={closeEditModal}
+        actions={
+          <>
+            <button
+              className="ghost-button"
+              type="button"
+              onClick={closeEditModal}
+              disabled={isSubmittingEdit}
+            >
+              Annuler
+            </button>
+            <button
+              className="primary-button"
+              type="submit"
+              form="edit-user-form"
+              disabled={isSubmittingEdit}
+            >
+              {isSubmittingEdit ? "Enregistrement..." : "Enregistrer"}
+            </button>
+          </>
+        }
+      >
+        <form className="form-grid" id="edit-user-form" onSubmit={handleSubmitEdit}>
+          {editModalError ? (
+            <div className="inline-notice error">{editModalError}</div>
+          ) : null}
+
+          <div className="field-group">
+            <label className="field-label" htmlFor="edit-user-name">
+              Nom
+            </label>
+            <input
+              id="edit-user-name"
+              className="text-input"
+              type="text"
+              name="nom"
+              value={editFormData.nom}
+              onChange={handleEditFormChange}
+              required
+            />
+          </div>
+
+          <div className="field-group">
+            <label className="field-label" htmlFor="edit-user-email">
+              Email
+            </label>
+            <input
+              id="edit-user-email"
+              className="text-input"
+              type="email"
+              name="email"
+              value={editFormData.email}
+              onChange={handleEditFormChange}
+              required
+            />
+          </div>
+
+          <div className="field-group">
+            <label className="field-label" htmlFor="edit-user-role">
+              Role
+            </label>
+            <select
+              id="edit-user-role"
+              className="text-input select-input"
+              name="role"
+              value={editFormData.role}
+              onChange={handleEditFormChange}
+              required
+            >
+              <option value="admin">admin</option>
+              <option value="employe">employe</option>
+            </select>
+          </div>
+        </form>
+      </Modal>
     </div>
   );
 }

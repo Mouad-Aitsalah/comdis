@@ -1,9 +1,23 @@
-const bcrypt = require("bcrypt");
+const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const { Prisma } = require("@prisma/client");
 const { randomBytes } = require("crypto");
 const prisma = require("../config/prisma");
 const { createHttpError } = require("../utils/httpError");
+const { validateSchema } = require("../utils/validation");
+const {
+  loginSchema,
+  customerCreateSchema,
+  customerCreditPaymentSchema,
+  saleCreateSchema,
+  stockEntrySchema,
+  stockCorrectionSchema,
+} = require("../utils/validationSchemas");
+const { isEmailConfigured } = require("../services/emailService");
+const {
+  getReportStatus,
+  setReportStatus,
+} = require("../services/reportSettings");
 
 const isBlankString = (value) => typeof value === "string" && value.trim() === "";
 
@@ -42,6 +56,7 @@ const parseOptionalPositiveInteger = (value) => {
 const PAYMENT_METHOD_ALIASES = {
   cash: "cash",
   card: "card",
+  credit: "credit",
   transfer: "transfer",
   bank_transfer: "transfer",
   "bank-transfer": "transfer",
@@ -99,6 +114,7 @@ const createToken = (user) =>
       email: user.email,
       role: user.role,
       pointDeVenteId: user.pointDeVenteId,
+      caisseId: user.caisseId,
     },
     process.env.JWT_SECRET,
     {
@@ -106,7 +122,7 @@ const createToken = (user) =>
     }
   );
 
-const mapRoleToApi = (role) => (role === "ADMIN" ? "admin" : "employee");
+const mapRoleToApi = (role) => (role === "ADMIN" ? "admin" : "employe");
 
 const decimalToNumber = (value) => {
   if (value instanceof Prisma.Decimal) {
@@ -126,6 +142,18 @@ const toApiUser = (user) => ({
   email: user.email,
   role: mapRoleToApi(user.role),
   storeId: user.pointDeVenteId,
+  storeName: user.pointDeVente ? user.pointDeVente.nom : null,
+  cashRegisterId: user.caisseId,
+  cashRegisterName: user.caisse ? user.caisse.nom : null,
+});
+
+const toApiCashRegister = (caisse) => ({
+  id: caisse.id,
+  name: caisse.nom,
+  code: caisse.code,
+  storeId: caisse.pointDeVenteId,
+  storeName: caisse.pointDeVente ? caisse.pointDeVente.nom : null,
+  isActive: caisse.estActive,
 });
 
 const toApiProduct = (product) => ({
@@ -140,16 +168,115 @@ const toApiProduct = (product) => ({
   active: product.estActif,
 });
 
-const toApiStock = (stock) => ({
-  id: stock.id,
-  productId: stock.produitId,
-  productName: stock.produit.nom,
-  barcode: stock.produit.codeBarres,
-  storeId: stock.pointDeVenteId,
-  storeName: stock.pointDeVente.nom,
-  quantity: stock.quantite,
-  minimumThreshold: stock.produit.seuilMinimum,
+const toApiCustomer = (client) => ({
+  id: client.id,
+  customerNumber: client.numeroClient,
+  name: client.nom,
+  phone: client.telephone,
+  email: client.email,
+  credit: decimalToNumber(client.credit),
+  active: client.estActif,
 });
+
+const buildCustomerSummary = (client) => {
+  const ventes = client.ventes || [];
+  const totalPurchases = ventes.reduce(
+    (total, vente) => total.plus(vente.total),
+    new Prisma.Decimal(0)
+  );
+
+  return {
+    ...toApiCustomer(client),
+    totalPurchases: decimalToNumber(totalPurchases),
+    salesCount:
+      client._count?.ventes !== undefined ? client._count.ventes : ventes.length,
+  };
+};
+
+const toApiCustomerPayment = (paiement) => ({
+  id: paiement.id,
+  date: paiement.createdAt,
+  amount: decimalToNumber(paiement.montant),
+  note: paiement.note || "",
+});
+
+const getDecimalValue = (value) => {
+  if (value instanceof Prisma.Decimal) {
+    return value;
+  }
+
+  if (value === undefined || value === null || value === "") {
+    return new Prisma.Decimal(0);
+  }
+
+  return new Prisma.Decimal(value);
+};
+
+const getLineNetProfit = (line) => {
+  const unitSalePrice = getDecimalValue(line.prixUnitaire);
+  const purchasePrice = getDecimalValue(line.produit?.prixAchat);
+  const quantity = new Prisma.Decimal(line.quantite || 0);
+
+  return unitSalePrice.minus(purchasePrice).times(quantity);
+};
+
+const getStockStatusMeta = (quantity, minimumThreshold) => {
+  if (quantity === 0) {
+    return {
+      status: "Rupture",
+      isLowStock: true,
+      severity: "critical",
+    };
+  }
+
+  if (quantity <= minimumThreshold) {
+    return {
+      status: "Stock faible",
+      isLowStock: true,
+      severity: "warning",
+    };
+  }
+
+  return {
+    status: "Disponible",
+    isLowStock: false,
+    severity: "normal",
+  };
+};
+
+const toApiStock = (stock) => {
+  const minimumThreshold =
+    stock.minimumThreshold ?? stock.produit?.seuilMinimum ?? 0;
+  const quantity = stock.quantity ?? stock.quantite ?? 0;
+  const statusMeta = getStockStatusMeta(quantity, minimumThreshold);
+
+  return {
+    id: stock.id,
+    productId: stock.productId ?? stock.produitId,
+    productName: stock.productName ?? stock.produit?.nom ?? "",
+    barcode: stock.barcode ?? stock.produit?.codeBarres ?? "",
+    storeId: stock.storeId ?? stock.pointDeVenteId,
+    storeName: stock.storeName ?? stock.pointDeVente?.nom ?? "",
+    quantity,
+    minimumThreshold,
+    status: statusMeta.status,
+    isLowStock: statusMeta.isLowStock,
+    severity: statusMeta.severity,
+  };
+};
+
+const buildReturnedQuantitiesMap = (retours = []) => {
+  const returnedQuantities = new Map();
+
+  for (const retour of retours) {
+    returnedQuantities.set(
+      retour.produitId,
+      (returnedQuantities.get(retour.produitId) || 0) + retour.quantite
+    );
+  }
+
+  return returnedQuantities;
+};
 
 const getStartOfDay = (date) =>
   new Date(date.getFullYear(), date.getMonth(), date.getDate(), 0, 0, 0, 0);
@@ -212,6 +339,31 @@ const getEmployeeStoreId = (user) => {
   }
 
   return user.pointDeVenteId || null;
+};
+
+const getEmployeeCashRegisterId = (user) => {
+  if (user.role !== "EMPLOYE") {
+    return null;
+  }
+
+  return user.caisseId || null;
+};
+
+const getDefaultCustomer = async (db = prisma) => {
+  const defaultCustomer = await db.client.findUnique({
+    where: {
+      numeroClient: 1,
+    },
+  });
+
+  if (!defaultCustomer) {
+    throw createHttpError(
+      500,
+      'Default customer "Client inconnu" is missing. Run the database seed again.'
+    );
+  }
+
+  return defaultCustomer;
 };
 
 const ensureProductAndStoreExist = async (produitId, pointDeVenteId) => {
@@ -333,6 +485,40 @@ const normalizeSaleItems = (items) => {
   }));
 };
 
+const normalizeReturnItems = (items) => {
+  if (items === undefined || items === null) {
+    throw createHttpError(400, "items is required", "BAD_REQUEST");
+  }
+
+  if (!Array.isArray(items)) {
+    throw createHttpError(400, "items must be an array", "BAD_REQUEST");
+  }
+
+  if (items.length === 0) {
+    throw createHttpError(400, "items cannot be empty", "BAD_REQUEST");
+  }
+
+  const groupedItems = new Map();
+
+  for (const item of items) {
+    const productId = validatePositiveInteger(
+      getAliasedValue(item, "productId", "produitId"),
+      "productId"
+    );
+    const quantity = validatePositiveInteger(
+      getAliasedValue(item, "quantity", "quantite"),
+      "quantity"
+    );
+
+    groupedItems.set(productId, (groupedItems.get(productId) || 0) + quantity);
+  }
+
+  return Array.from(groupedItems.entries()).map(([productId, quantity]) => ({
+    productId,
+    quantity,
+  }));
+};
+
 const generateTicketNumber = (storeId) => {
   const now = new Date();
   const datePart = [
@@ -377,13 +563,44 @@ const createStockMovement = async (
     },
   });
 
-const login = async (req, res) => {
-  const email = normalizeRequiredString(req.body.email).toLowerCase();
-  const password = String(req.body.password || "");
+const restoreStockForProduct = async (
+  db,
+  { productId, storeId, quantity, type, reason = null }
+) => {
+  await db.stock.upsert({
+    where: {
+      produitId_pointDeVenteId: {
+        produitId: productId,
+        pointDeVenteId: storeId,
+      },
+    },
+    update: {
+      quantite: {
+        increment: quantity,
+      },
+    },
+    create: {
+      produitId: productId,
+      pointDeVenteId: storeId,
+      quantite: quantity,
+    },
+  });
 
-  if (!email || !password.trim()) {
-    throw createHttpError(400, "email and password are required.");
-  }
+  await createStockMovement(db, {
+    productId,
+    storeId,
+    quantity,
+    type,
+    reason,
+  });
+};
+
+const login = async (req, res) => {
+  const { email: validatedEmail, password } = validateSchema(loginSchema, {
+    email: req.body.email,
+    password: req.body.password,
+  });
+  const email = validatedEmail.toLowerCase();
 
   if (!process.env.JWT_SECRET) {
     throw createHttpError(500, "JWT_SECRET is missing in the configuration.");
@@ -391,6 +608,18 @@ const login = async (req, res) => {
 
   const user = await prisma.utilisateur.findUnique({
     where: { email },
+    include: {
+      pointDeVente: {
+        select: {
+          nom: true,
+        },
+      },
+      caisse: {
+        select: {
+          nom: true,
+        },
+      },
+    },
   });
 
   if (!user) {
@@ -519,42 +748,82 @@ const getStocks = async (req, res) => {
     throw createHttpError(403, "Employee is not assigned to a store.");
   }
 
-  const where =
+  const storesWhere =
     req.user.role === "ADMIN"
       ? {}
       : {
-          pointDeVenteId: employeeStoreId,
+          id: employeeStoreId,
         };
 
-  const [total, stocks] = await Promise.all([
-    prisma.stock.count({ where }),
+  const [products, stores, stockRows] = await Promise.all([
+    prisma.produit.findMany({
+      select: {
+        id: true,
+        nom: true,
+        codeBarres: true,
+        seuilMinimum: true,
+      },
+      orderBy: [{ nom: "asc" }, { id: "asc" }],
+    }),
+    prisma.pointDeVente.findMany({
+      where: storesWhere,
+      select: {
+        id: true,
+        nom: true,
+      },
+      orderBy: [{ nom: "asc" }, { id: "asc" }],
+    }),
     prisma.stock.findMany({
-      where,
-      include: {
-        produit: {
-          select: {
-            nom: true,
-            codeBarres: true,
-            seuilMinimum: true,
-          },
-        },
-        pointDeVente: {
-          select: {
-            nom: true,
-          },
-        },
+      where:
+        req.user.role === "ADMIN"
+          ? {}
+          : {
+              pointDeVenteId: employeeStoreId,
+            },
+      select: {
+        id: true,
+        produitId: true,
+        pointDeVenteId: true,
+        quantite: true,
       },
-      orderBy: {
-        updatedAt: "desc",
-      },
-      skip,
-      take: limit,
     }),
   ]);
 
+  const stockByProductAndStore = new Map(
+    stockRows.map((stock) => [
+      `${stock.produitId}-${stock.pointDeVenteId}`,
+      stock,
+    ])
+  );
+
+  const allStockRows = [];
+
+  for (const store of stores) {
+    for (const product of products) {
+      const stockKey = `${product.id}-${store.id}`;
+      const existingStock = stockByProductAndStore.get(stockKey);
+
+      allStockRows.push(
+        toApiStock({
+          id: existingStock?.id || `virtual-${product.id}-${store.id}`,
+          productId: product.id,
+          productName: product.nom,
+          barcode: product.codeBarres,
+          storeId: store.id,
+          storeName: store.nom,
+          quantity: existingStock?.quantite ?? 0,
+          minimumThreshold: product.seuilMinimum,
+        })
+      );
+    }
+  }
+
+  const total = allStockRows.length;
+  const stocks = allStockRows.slice(skip, skip + limit);
+
   return res.status(200).json(
     buildPaginatedResponse({
-      data: stocks.map(toApiStock),
+      data: stocks,
       page,
       limit,
       total,
@@ -562,18 +831,107 @@ const getStocks = async (req, res) => {
   );
 };
 
-const stockIn = async (req, res) => {
-  const productId = parsePositiveInteger(req.body.productId);
-  const storeId = parsePositiveInteger(req.body.storeId);
-  const quantity = parsePositiveInteger(req.body.quantity);
-  const reason = normalizeOptionalString(req.body.reason);
+const getStockAlerts = async (req, res) => {
+  const employeeStoreId = getEmployeeStoreId(req.user);
 
-  if (Number.isNaN(productId) || Number.isNaN(storeId) || Number.isNaN(quantity)) {
-    throw createHttpError(
-      400,
-      "productId, storeId and quantity must be valid positive integers."
-    );
+  if (req.user.role === "EMPLOYE" && !employeeStoreId) {
+    throw createHttpError(403, "Employee is not assigned to a store.");
   }
+
+  const [products, stores, stockRows] = await Promise.all([
+    prisma.produit.findMany({
+      select: {
+        id: true,
+        nom: true,
+        seuilMinimum: true,
+      },
+    }),
+    prisma.pointDeVente.findMany({
+      where:
+        req.user.role === "EMPLOYE"
+          ? {
+              id: employeeStoreId,
+            }
+          : {},
+      select: {
+        id: true,
+        nom: true,
+      },
+    }),
+    prisma.stock.findMany({
+      where:
+        req.user.role === "EMPLOYE"
+          ? {
+              pointDeVenteId: employeeStoreId,
+            }
+          : {},
+      select: {
+        id: true,
+        produitId: true,
+        pointDeVenteId: true,
+        quantite: true,
+      },
+    }),
+  ]);
+
+  const stockByProductAndStore = new Map(
+    stockRows.map((stock) => [
+      `${stock.produitId}-${stock.pointDeVenteId}`,
+      stock,
+    ])
+  );
+
+  const lowStockItems = [];
+
+  for (const store of stores) {
+    for (const product of products) {
+      const existingStock = stockByProductAndStore.get(`${product.id}-${store.id}`);
+      const quantity = existingStock?.quantite ?? 0;
+      const statusMeta = getStockStatusMeta(quantity, product.seuilMinimum);
+
+      if (!statusMeta.isLowStock) {
+        continue;
+      }
+
+      lowStockItems.push({
+        id: existingStock?.id || `virtual-${product.id}-${store.id}`,
+        produitId: product.id,
+        produitNom: product.nom,
+        magasin: store.nom,
+        magasinId: store.id,
+        quantite: quantity,
+        seuilMinimum: product.seuilMinimum,
+        isLowStock: true,
+        severity: statusMeta.severity,
+        status: statusMeta.status,
+      });
+    }
+  }
+
+  lowStockItems.sort((a, b) => {
+    if (a.quantite !== b.quantite) {
+      return a.quantite - b.quantite;
+    }
+
+    return a.produitNom.localeCompare(b.produitNom, "fr");
+  });
+
+  return res.status(200).json(
+    lowStockItems
+  );
+};
+
+const stockIn = async (req, res) => {
+  const parsedInput = validateSchema(stockEntrySchema, {
+    productId: req.body.productId,
+    storeId: req.body.storeId,
+    quantity: req.body.quantity,
+    reason: req.body.reason,
+  });
+  const productId = parsePositiveInteger(parsedInput.productId);
+  const storeId = parsePositiveInteger(parsedInput.storeId);
+  const quantity = parsePositiveInteger(parsedInput.quantity);
+  const reason = normalizeOptionalString(parsedInput.reason);
 
   await ensureProductAndStoreExist(productId, storeId);
 
@@ -622,17 +980,16 @@ const stockIn = async (req, res) => {
 };
 
 const stockCorrection = async (req, res) => {
-  const productId = parsePositiveInteger(req.body.productId);
-  const storeId = parsePositiveInteger(req.body.storeId);
-  const quantity = parseNonNegativeInteger(req.body.quantity);
-  const reason = normalizeOptionalString(req.body.reason);
-
-  if (Number.isNaN(productId) || Number.isNaN(storeId) || Number.isNaN(quantity)) {
-    throw createHttpError(
-      400,
-      "productId and storeId must be valid positive integers, and quantity must be an integer >= 0."
-    );
-  }
+  const parsedInput = validateSchema(stockCorrectionSchema, {
+    productId: req.body.productId,
+    storeId: req.body.storeId,
+    quantity: req.body.quantity,
+    reason: req.body.reason,
+  });
+  const productId = parsePositiveInteger(parsedInput.productId);
+  const storeId = parsePositiveInteger(parsedInput.storeId);
+  const quantity = parseNonNegativeInteger(parsedInput.quantity);
+  const reason = normalizeOptionalString(parsedInput.reason);
 
   await ensureProductAndStoreExist(productId, storeId);
 
@@ -698,35 +1055,98 @@ const stockCorrection = async (req, res) => {
 };
 
 const createSale = async (req, res) => {
-  console.log("HIT /api/sales");
-  console.log("SALES BODY:", req.body);
-  console.log("SALES CONTENT-TYPE:", req.headers["content-type"]);
-  console.log("SALES storeId:", req.body?.storeId);
-  console.log("SALES pointDeVenteId:", req.body?.pointDeVenteId);
-
-  if (req.query.debug === "true") {
-    return res.status(200).json({
-      receivedBody: req.body,
-      contentType: req.headers["content-type"],
-      storeId: req.body?.storeId,
-      pointDeVenteId: req.body?.pointDeVenteId,
-    });
-  }
-
   if (isEmptyRequestBody(req.body)) {
     throw createHttpError(400, "Request body is empty", "BAD_REQUEST");
   }
 
-  const storeId = validatePositiveInteger(
-    getAliasedValue(req.body, "storeId", "pointDeVenteId"),
-    "storeId"
+  validateSchema(saleCreateSchema, {
+    storeId: getAliasedValue(req.body, "storeId", "pointDeVenteId"),
+    cashRegisterId: getAliasedValue(req.body, "cashRegisterId", "caisseId"),
+    userId: getAliasedValue(req.body, "userId", "utilisateurId"),
+    customerId: getAliasedValue(req.body, "customerId", "clientId"),
+    paymentMethod: req.body.paymentMethod,
+    total: req.body.total,
+    items: Array.isArray(req.body.items)
+      ? req.body.items.map((item) => ({
+          productId: getAliasedValue(item, "productId", "produitId"),
+          quantity: getAliasedValue(item, "quantity", "quantite"),
+          unitPrice: getAliasedValue(item, "unitPrice", "prixUnitaire"),
+        }))
+      : req.body.items,
+  });
+
+  const requestedStoreId = parseOptionalPositiveInteger(
+    getAliasedValue(req.body, "storeId", "pointDeVenteId")
   );
-  const userId = validatePositiveInteger(
-    getAliasedValue(req.body, "userId", "utilisateurId"),
-    "userId"
+  const requestedCashRegisterId = parseOptionalPositiveInteger(
+    getAliasedValue(req.body, "cashRegisterId", "caisseId")
+  );
+  const requestedUserId = parseOptionalPositiveInteger(
+    getAliasedValue(req.body, "userId", "utilisateurId")
+  );
+  const requestedCustomerId = parseOptionalPositiveInteger(
+    getAliasedValue(req.body, "customerId", "clientId")
   );
   const items = normalizeSaleItems(req.body.items);
   let frontendTotal;
+
+  if (Number.isNaN(requestedStoreId)) {
+    throw createHttpError(400, "storeId must be a valid positive integer.", "BAD_REQUEST");
+  }
+
+  if (Number.isNaN(requestedCashRegisterId)) {
+    throw createHttpError(
+      400,
+      "cashRegisterId must be a valid positive integer.",
+      "BAD_REQUEST"
+    );
+  }
+
+  if (Number.isNaN(requestedUserId)) {
+    throw createHttpError(400, "userId must be a valid positive integer.", "BAD_REQUEST");
+  }
+
+  if (Number.isNaN(requestedCustomerId)) {
+    throw createHttpError(
+      400,
+      "customerId must be a valid positive integer.",
+      "BAD_REQUEST"
+    );
+  }
+
+  const isEmployee = req.user.role === "EMPLOYE";
+  const employeeStoreId = getEmployeeStoreId(req.user);
+  const employeeCashRegisterId = getEmployeeCashRegisterId(req.user);
+  const storeId = isEmployee ? employeeStoreId : requestedStoreId;
+  const cashRegisterId = isEmployee ? employeeCashRegisterId : requestedCashRegisterId;
+  const userId = req.user.id;
+
+  if (!storeId) {
+    throw createHttpError(
+      400,
+      isEmployee
+        ? "Authenticated employee is not assigned to a store."
+        : "storeId is required for admin sales.",
+      "BAD_REQUEST"
+    );
+  }
+
+  if (!cashRegisterId) {
+    throw createHttpError(
+      400,
+      isEmployee
+        ? "Authenticated employee is not assigned to a cash register."
+        : "cashRegisterId is required for admin sales.",
+      "BAD_REQUEST"
+    );
+  }
+
+  if (requestedUserId && requestedUserId !== req.user.id) {
+    throw createHttpError(
+      403,
+      "The authenticated user must match the sale userId."
+    );
+  }
 
   if (typeof req.body.paymentMethod !== "string" || isBlankString(req.body.paymentMethod)) {
     throw createHttpError(400, "paymentMethod must be a non-empty string", "BAD_REQUEST");
@@ -737,7 +1157,7 @@ const createSale = async (req, res) => {
   if (!paymentMethod) {
     throw createHttpError(
       400,
-      "paymentMethod must be one of: cash, card, transfer, mobile_money, other.",
+      "paymentMethod must be one of: cash, card, credit.",
       "BAD_REQUEST"
     );
   }
@@ -754,17 +1174,27 @@ const createSale = async (req, res) => {
     throw createHttpError(400, "total must be a valid number.", "BAD_REQUEST");
   }
 
-  if (
-    req.user.role === "EMPLOYE" &&
-    (req.user.id !== userId || req.user.pointDeVenteId !== storeId)
-  ) {
+  if (isEmployee && (!employeeStoreId || !employeeCashRegisterId)) {
     throw createHttpError(
       403,
-      "Employees can only create sales for themselves in their own store."
+      "Employees can only create sales when assigned to both a store and a cash register."
     );
   }
 
   const sale = await prisma.$transaction(async (tx) => {
+    const customer =
+      requestedCustomerId !== null
+        ? await tx.client.findUnique({
+            where: {
+              id: requestedCustomerId,
+            },
+          })
+        : await getDefaultCustomer(tx);
+
+    if (!customer) {
+      throw createHttpError(404, "Customer not found.");
+    }
+
     const pointDeVente = await tx.pointDeVente.findUnique({
       where: { id: storeId },
       select: { id: true },
@@ -774,6 +1204,32 @@ const createSale = async (req, res) => {
       throw createHttpError(404, "Store not found.");
     }
 
+    const caisse = await tx.caisse.findUnique({
+      where: { id: cashRegisterId },
+      select: {
+        id: true,
+        nom: true,
+        code: true,
+        pointDeVenteId: true,
+        estActive: true,
+      },
+    });
+
+    if (!caisse) {
+      throw createHttpError(404, "Cash register not found.");
+    }
+
+    if (caisse.pointDeVenteId !== storeId) {
+      throw createHttpError(
+        400,
+        "The selected cash register does not belong to the selected store."
+      );
+    }
+
+    if (!caisse.estActive) {
+      throw createHttpError(400, "The selected cash register is inactive.");
+    }
+
     const utilisateur = await tx.utilisateur.findUnique({
       where: { id: userId },
       select: {
@@ -781,6 +1237,7 @@ const createSale = async (req, res) => {
         role: true,
         estActif: true,
         pointDeVenteId: true,
+        caisseId: true,
       },
     });
 
@@ -794,6 +1251,13 @@ const createSale = async (req, res) => {
 
     if (utilisateur.role === "EMPLOYE" && utilisateur.pointDeVenteId !== storeId) {
       throw createHttpError(400, "This employee does not belong to the selected store.");
+    }
+
+    if (utilisateur.role === "EMPLOYE" && utilisateur.caisseId !== cashRegisterId) {
+      throw createHttpError(
+        400,
+        "This employee does not belong to the selected cash register."
+      );
     }
 
     const productIds = items.map((item) => item.productId);
@@ -881,13 +1345,23 @@ const createSale = async (req, res) => {
       );
     }
 
+    if (paymentMethod === "credit" && customer.numeroClient === 1) {
+      throw createHttpError(
+        400,
+        'Credit payment is not allowed for "Client inconnu".'
+      );
+    }
+
     const createdSale = await tx.vente.create({
       data: {
         numeroTicket: generateTicketNumber(storeId),
         total,
         paymentMethod,
+        status: "completed",
         pointDeVenteId: storeId,
+        caisseId: cashRegisterId,
         utilisateurId: userId,
+        clientId: customer.id,
         lignes: {
           create: lignesData,
         },
@@ -929,6 +1403,19 @@ const createSale = async (req, res) => {
       });
     }
 
+    if (paymentMethod === "credit") {
+      await tx.client.update({
+        where: {
+          id: customer.id,
+        },
+        data: {
+          credit: {
+            increment: total,
+          },
+        },
+      });
+    }
+
     return tx.vente.findUnique({
       where: { id: createdSale.id },
       select: {
@@ -936,7 +1423,13 @@ const createSale = async (req, res) => {
         numeroTicket: true,
         total: true,
         paymentMethod: true,
+        status: true,
         createdAt: true,
+        pointDeVenteId: true,
+        caisseId: true,
+        utilisateurId: true,
+        clientId: true,
+        client: true,
       },
     });
   });
@@ -944,29 +1437,52 @@ const createSale = async (req, res) => {
   return res.status(201).json({
     id: sale.id,
     ticketNumber: sale.numeroTicket,
+    storeId: sale.pointDeVenteId,
+    cashRegisterId: sale.caisseId,
+    userId: sale.utilisateurId,
+    customerId: sale.clientId,
+    customerNumber: sale.client ? sale.client.numeroClient : null,
+    customerName: sale.client ? sale.client.nom : null,
+    customerCredit: sale.client ? decimalToNumber(sale.client.credit) : 0,
     total: decimalToNumber(sale.total),
     paymentMethod: sale.paymentMethod,
-    status: "completed",
+    status: sale.status,
     createdAt: sale.createdAt,
   });
 };
 
 const getSales = async (req, res) => {
+  const where =
+    req.user.role === "EMPLOYE"
+      ? {
+          utilisateurId: req.user.id,
+        }
+      : {};
   const { page, limit, skip } = getPaginationParams(req.query);
   const [total, sales] = await Promise.all([
-    prisma.vente.count(),
+    prisma.vente.count({ where }),
     prisma.vente.findMany({
+      where,
       include: {
         pointDeVente: {
           select: {
+            id: true,
+            nom: true,
+          },
+        },
+        caisse: {
+          select: {
+            id: true,
             nom: true,
           },
         },
         utilisateur: {
           select: {
+            id: true,
             nom: true,
           },
         },
+        client: true,
         lignes: {
           orderBy: {
             id: "asc",
@@ -974,9 +1490,19 @@ const getSales = async (req, res) => {
           include: {
             produit: {
               select: {
+                id: true,
                 nom: true,
               },
             },
+          },
+        },
+        retours: {
+          select: {
+            id: true,
+            produitId: true,
+            quantite: true,
+            raison: true,
+            createdAt: true,
           },
         },
       },
@@ -990,28 +1516,613 @@ const getSales = async (req, res) => {
 
   return res.status(200).json(
     buildPaginatedResponse({
-      data: sales.map((sale) => ({
-        id: sale.id,
-        ticketNumber: sale.numeroTicket,
-        date: sale.dateVente,
-        paymentMethod: sale.paymentMethod,
-        storeName: sale.pointDeVente ? sale.pointDeVente.nom : "",
-        cashierName: sale.utilisateur ? sale.utilisateur.nom : "",
-        itemsCount: sale.lignes.reduce((totalItems, ligne) => totalItems + ligne.quantite, 0),
-        total: decimalToNumber(sale.total),
-        syncStatus: "synced",
-        items: sale.lignes.map((ligne) => ({
-          productName: ligne.produit ? ligne.produit.nom : "",
-          quantity: ligne.quantite,
-          unitPrice: decimalToNumber(ligne.prixUnitaire),
-          subtotal: decimalToNumber(ligne.sousTotal),
-        })),
-      })),
+      data: sales.map((sale) => {
+        const returnedQuantities = buildReturnedQuantitiesMap(sale.retours);
+
+        return {
+          id: sale.id,
+          ticketNumber: sale.numeroTicket,
+          date: sale.dateVente,
+          paymentMethod: sale.paymentMethod,
+          status: sale.status,
+          storeId: sale.pointDeVenteId,
+          storeName: sale.pointDeVente ? sale.pointDeVente.nom : "",
+          cashRegisterId: sale.caisseId,
+          cashRegisterName: sale.caisse ? sale.caisse.nom : "",
+          userId: sale.utilisateurId,
+          cashierName: sale.utilisateur ? sale.utilisateur.nom : "",
+          customerId: sale.clientId || 1,
+          customerNumber: sale.client ? sale.client.numeroClient : 1,
+          customerName: sale.client ? sale.client.nom : "Client inconnu",
+          customerCredit: sale.client ? decimalToNumber(sale.client.credit) : 0,
+          itemsCount: sale.lignes.reduce(
+            (totalItems, ligne) => totalItems + ligne.quantite,
+            0
+          ),
+          total: decimalToNumber(sale.total),
+          syncStatus: "synced",
+          returns: sale.retours.map((retour) => ({
+            id: retour.id,
+            produitId: retour.produitId,
+            quantity: retour.quantite,
+            reason: retour.raison,
+            createdAt: retour.createdAt,
+          })),
+          items: sale.lignes.map((ligne) => {
+            const returnedQuantity = returnedQuantities.get(ligne.produitId) || 0;
+
+            return {
+              productId: ligne.produitId,
+              productName: ligne.produit ? ligne.produit.nom : "",
+              quantity: ligne.quantite,
+              returnedQuantity,
+              remainingReturnQuantity: Math.max(ligne.quantite - returnedQuantity, 0),
+              unitPrice: decimalToNumber(ligne.prixUnitaire),
+              subtotal: decimalToNumber(ligne.sousTotal),
+            };
+          }),
+        };
+      }),
       page,
       limit,
       total,
     })
   );
+};
+
+const cancelSale = async (req, res) => {
+  const saleId = parsePositiveInteger(req.params.id);
+
+  if (Number.isNaN(saleId)) {
+    throw createHttpError(400, "sale id must be a valid positive integer.");
+  }
+
+  const sale = await prisma.$transaction(async (tx) => {
+    const existingSale = await tx.vente.findUnique({
+      where: { id: saleId },
+      include: {
+        lignes: {
+          select: {
+            produitId: true,
+            quantite: true,
+          },
+        },
+        retours: {
+          select: {
+            id: true,
+          },
+        },
+      },
+    });
+
+    if (!existingSale) {
+      throw createHttpError(404, "Sale not found.");
+    }
+
+    if (existingSale.status === "cancelled") {
+      throw createHttpError(400, "This sale is already cancelled.");
+    }
+
+    if (existingSale.status === "refunded") {
+      throw createHttpError(400, "A refunded sale cannot be cancelled.");
+    }
+
+    if (existingSale.retours.length > 0) {
+      throw createHttpError(
+        400,
+        "A sale with existing returns cannot be cancelled."
+      );
+    }
+
+    for (const ligne of existingSale.lignes) {
+      await restoreStockForProduct(tx, {
+        productId: ligne.produitId,
+        storeId: existingSale.pointDeVenteId,
+        quantity: ligne.quantite,
+        type: "CANCEL",
+        reason: `Sale cancelled ${existingSale.numeroTicket}`,
+      });
+    }
+
+    return tx.vente.update({
+      where: { id: saleId },
+      data: {
+        status: "cancelled",
+      },
+      select: {
+        id: true,
+        numeroTicket: true,
+        status: true,
+      },
+    });
+  });
+
+  return res.status(200).json({
+    message: "Sale cancelled successfully.",
+    sale,
+  });
+};
+
+const returnSale = async (req, res) => {
+  const saleId = parsePositiveInteger(req.params.id);
+
+  if (Number.isNaN(saleId)) {
+    throw createHttpError(400, "sale id must be a valid positive integer.");
+  }
+
+  const items = normalizeReturnItems(req.body.items);
+  const reason = normalizeOptionalString(req.body.reason);
+
+  const sale = await prisma.$transaction(async (tx) => {
+    const existingSale = await tx.vente.findUnique({
+      where: { id: saleId },
+      include: {
+        lignes: {
+          select: {
+            produitId: true,
+            quantite: true,
+          },
+        },
+        retours: {
+          select: {
+            produitId: true,
+            quantite: true,
+          },
+        },
+      },
+    });
+
+    if (!existingSale) {
+      throw createHttpError(404, "Sale not found.");
+    }
+
+    if (req.user.role === "EMPLOYE" && existingSale.utilisateurId !== req.user.id) {
+      throw createHttpError(403, "Employees can only return their own sales.");
+    }
+
+    if (existingSale.status === "cancelled") {
+      throw createHttpError(400, "A cancelled sale cannot be returned.");
+    }
+
+    if (existingSale.status === "refunded") {
+      throw createHttpError(400, "This sale is already fully refunded.");
+    }
+
+    const soldQuantities = new Map(
+      existingSale.lignes.map((ligne) => [ligne.produitId, ligne.quantite])
+    );
+    const returnedQuantities = buildReturnedQuantitiesMap(existingSale.retours);
+
+    for (const item of items) {
+      const soldQuantity = soldQuantities.get(item.productId);
+
+      if (!soldQuantity) {
+        throw createHttpError(
+          400,
+          `Product ${item.productId} is not part of this sale.`
+        );
+      }
+
+      const alreadyReturnedQuantity = returnedQuantities.get(item.productId) || 0;
+      const remainingQuantity = soldQuantity - alreadyReturnedQuantity;
+
+      if (item.quantity > remainingQuantity) {
+        throw createHttpError(
+          400,
+          `Return quantity exceeds remaining sold quantity for product ${item.productId}.`
+        );
+      }
+    }
+
+    for (const item of items) {
+      await tx.retour.create({
+        data: {
+          venteId: existingSale.id,
+          produitId: item.productId,
+          quantite: item.quantity,
+          raison: reason,
+        },
+      });
+
+      await restoreStockForProduct(tx, {
+        productId: item.productId,
+        storeId: existingSale.pointDeVenteId,
+        quantity: item.quantity,
+        type: "RETURN",
+        reason: reason || `Sale return ${existingSale.numeroTicket}`,
+      });
+
+      returnedQuantities.set(
+        item.productId,
+        (returnedQuantities.get(item.productId) || 0) + item.quantity
+      );
+    }
+
+    const isFullyReturned = existingSale.lignes.every((ligne) => {
+      const returnedQuantity = returnedQuantities.get(ligne.produitId) || 0;
+      return returnedQuantity >= ligne.quantite;
+    });
+
+    return tx.vente.update({
+      where: { id: saleId },
+      data: {
+        status: isFullyReturned ? "refunded" : existingSale.status,
+      },
+      select: {
+        id: true,
+        numeroTicket: true,
+        status: true,
+      },
+    });
+  });
+
+  return res.status(200).json({
+    message: "Sale return processed successfully.",
+    sale,
+  });
+};
+
+const getCustomers = async (req, res) => {
+  const search = normalizeRequiredString(req.query.search || "");
+  const numericSearch = Number(search);
+  const where = search
+    ? {
+        OR: [
+          {
+            nom: {
+              contains: search,
+              mode: "insensitive",
+            },
+          },
+          {
+            telephone: {
+              contains: search,
+              mode: "insensitive",
+            },
+          },
+          {
+            email: {
+              contains: search,
+              mode: "insensitive",
+            },
+          },
+          ...(!Number.isNaN(numericSearch) && Number.isInteger(numericSearch)
+            ? [
+                {
+                  numeroClient: numericSearch,
+                },
+              ]
+            : []),
+        ],
+      }
+    : {};
+
+  const customers = await prisma.client.findMany({
+    where,
+    include: {
+      ventes: {
+        select: {
+          total: true,
+        },
+      },
+      _count: {
+        select: {
+          ventes: true,
+        },
+      },
+    },
+    orderBy: [{ numeroClient: "asc" }, { id: "asc" }],
+  });
+
+  return res.status(200).json(customers.map(buildCustomerSummary));
+};
+
+const createCustomer = async (req, res) => {
+  try {
+    const parsedInput = validateSchema(customerCreateSchema, {
+      name: req.body.name || req.body.nom,
+      phone: req.body.phone || req.body.telephone,
+      email: req.body.email,
+    });
+    const nom = normalizeRequiredString(parsedInput.name);
+    const telephone = normalizeOptionalString(parsedInput.phone);
+    const email = normalizeOptionalString(parsedInput.email);
+
+    const newCustomer = await prisma.$transaction(async (tx) => {
+      await getDefaultCustomer(tx);
+
+      const lastCustomer = await tx.client.findFirst({
+        where: {
+          numeroClient: {
+            gt: 1,
+          },
+        },
+        orderBy: {
+          numeroClient: "desc",
+        },
+        select: {
+          numeroClient: true,
+        },
+      });
+
+      const nextNumero = lastCustomer ? lastCustomer.numeroClient + 1 : 2;
+
+      if (nextNumero <= 1) {
+        throw createHttpError(
+          500,
+          'Invalid customer numbering. Customer number #1 is reserved for "Client inconnu".'
+        );
+      }
+
+      return tx.client.create({
+        data: {
+          numeroClient: nextNumero,
+          nom: nom.trim(),
+          telephone: telephone || null,
+          email: email || null,
+          credit: 0,
+          estActif: true,
+        },
+      });
+    });
+
+    return res.status(201).json({
+      success: true,
+      data: toApiCustomer(newCustomer),
+    });
+  } catch (error) {
+    console.error("createCustomer failed:", error);
+    throw error;
+  }
+};
+
+const getCustomerCredit = async (req, res) => {
+  const customerId = parsePositiveInteger(req.params.id);
+
+  if (Number.isNaN(customerId)) {
+    throw createHttpError(400, "customer id must be a valid positive integer.");
+  }
+
+  const customer = await prisma.client.findUnique({
+    where: {
+      id: customerId,
+    },
+  });
+
+  if (!customer) {
+    throw createHttpError(404, "Customer not found.");
+  }
+
+  return res.status(200).json({
+    customerId: customer.id,
+    customerNumber: customer.numeroClient,
+    name: customer.nom,
+    credit: decimalToNumber(customer.credit),
+  });
+};
+
+const getCustomerById = async (req, res) => {
+  const customerId = parsePositiveInteger(req.params.id);
+
+  if (Number.isNaN(customerId)) {
+    throw createHttpError(400, "customer id must be a valid positive integer.");
+  }
+
+  const customer = await prisma.client.findUnique({
+    where: {
+      id: customerId,
+    },
+    include: {
+      ventes: {
+        select: {
+          total: true,
+        },
+      },
+      paiements: {
+        orderBy: {
+          createdAt: "desc",
+        },
+      },
+      _count: {
+        select: {
+          ventes: true,
+        },
+      },
+    },
+  });
+
+  if (!customer) {
+    throw createHttpError(404, "Customer not found.");
+  }
+
+  return res.status(200).json({
+    ...buildCustomerSummary(customer),
+    paymentHistory: (customer.paiements || []).map(toApiCustomerPayment),
+  });
+};
+
+const getCustomerSales = async (req, res) => {
+  const customerId = parsePositiveInteger(req.params.id);
+
+  if (Number.isNaN(customerId)) {
+    throw createHttpError(400, "customer id must be a valid positive integer.");
+  }
+
+  const customer = await prisma.client.findUnique({
+    where: {
+      id: customerId,
+    },
+    select: {
+      id: true,
+    },
+  });
+
+  if (!customer) {
+    throw createHttpError(404, "Customer not found.");
+  }
+
+  const sales = await prisma.vente.findMany({
+    where: {
+      clientId: customerId,
+    },
+    include: {
+      pointDeVente: {
+        select: {
+          nom: true,
+        },
+      },
+      caisse: {
+        select: {
+          nom: true,
+        },
+      },
+    },
+    orderBy: {
+      dateVente: "desc",
+    },
+  });
+
+  return res.status(200).json(
+    sales.map((sale) => ({
+      id: sale.id,
+      ticketNumber: sale.numeroTicket,
+      date: sale.dateVente,
+      storeName: sale.pointDeVente ? sale.pointDeVente.nom : "",
+      cashRegisterName: sale.caisse ? sale.caisse.nom : "",
+      total: decimalToNumber(sale.total),
+      paymentMethod: sale.paymentMethod,
+      status: sale.status,
+    }))
+  );
+};
+
+const payCustomerCredit = async (req, res) => {
+  const customerId = parsePositiveInteger(req.params.id);
+
+  if (Number.isNaN(customerId)) {
+    throw createHttpError(400, "customer id must be a valid positive integer.");
+  }
+
+  const parsedInput = validateSchema(customerCreditPaymentSchema, {
+    amount: req.body.amount,
+    note: req.body.note,
+  });
+
+  const amount = new Prisma.Decimal(parsedInput.amount);
+  const note = normalizeOptionalString(parsedInput.note);
+
+  const updatedCustomer = await prisma.$transaction(async (tx) => {
+    const customer = await tx.client.findUnique({
+      where: {
+        id: customerId,
+      },
+    });
+
+    if (!customer) {
+      throw createHttpError(404, "Customer not found.");
+    }
+
+    if (new Prisma.Decimal(customer.credit).lessThan(amount)) {
+      throw createHttpError(
+        400,
+        "amount cannot be greater than the current customer credit."
+      );
+    }
+
+    await tx.paiementClient.create({
+      data: {
+        clientId: customer.id,
+        montant: amount,
+        note: note || "Paiement credit",
+      },
+    });
+
+    return tx.client.update({
+      where: {
+        id: customer.id,
+      },
+      data: {
+        credit: {
+          decrement: amount,
+        },
+      },
+      include: {
+        ventes: {
+          select: {
+            total: true,
+          },
+        },
+        _count: {
+          select: {
+            ventes: true,
+          },
+        },
+      },
+    });
+  });
+
+  return res.status(200).json({
+    message: "Customer credit updated successfully.",
+    customer: buildCustomerSummary(updatedCustomer),
+  });
+};
+
+const deleteCustomer = async (req, res) => {
+  const customerId = parsePositiveInteger(req.params.id);
+
+  if (Number.isNaN(customerId)) {
+    throw createHttpError(400, "customer id must be a valid positive integer.");
+  }
+
+  const customer = await prisma.client.findUnique({
+    where: {
+      id: customerId,
+    },
+    include: {
+      _count: {
+        select: {
+          ventes: true,
+        },
+      },
+    },
+  });
+
+  if (!customer) {
+    throw createHttpError(404, "Customer not found.");
+  }
+
+  if (customer.numeroClient === 1) {
+    throw createHttpError(
+      400,
+      "Le client inconnu ne peut pas etre supprime."
+    );
+  }
+
+  if (customer._count.ventes > 0) {
+    const disabledCustomer = await prisma.client.update({
+      where: {
+        id: customer.id,
+      },
+      data: {
+        estActif: false,
+      },
+    });
+
+    return res.status(200).json({
+      message: "Client desactive avec succes.",
+      customer: toApiCustomer(disabledCustomer),
+    });
+  }
+
+  await prisma.client.delete({
+    where: {
+      id: customer.id,
+    },
+  });
+
+  return res.status(200).json({
+    message: "Client supprime avec succes.",
+  });
 };
 
 const getSuppliers = async (req, res) => {
@@ -1068,6 +2179,7 @@ const getReports = async (req, res) => {
             select: {
               id: true,
               nom: true,
+              prixAchat: true,
             },
           },
         },
@@ -1079,6 +2191,7 @@ const getReports = async (req, res) => {
   });
 
   let revenue = new Prisma.Decimal(0);
+  let netProfit = new Prisma.Decimal(0);
   const salesByStoreMap = new Map();
   const topProductsMap = new Map();
 
@@ -1089,6 +2202,7 @@ const getReports = async (req, res) => {
     const existingStore = salesByStoreMap.get(storeKey) || {
       storeName: sale.pointDeVente ? sale.pointDeVente.nom : "",
       revenue: new Prisma.Decimal(0),
+      netProfit: new Prisma.Decimal(0),
       salesCount: 0,
     };
 
@@ -1102,10 +2216,15 @@ const getReports = async (req, res) => {
         productName: ligne.produit ? ligne.produit.nom : "",
         quantitySold: 0,
         revenue: new Prisma.Decimal(0),
+        netProfit: new Prisma.Decimal(0),
       };
+      const lineNetProfit = getLineNetProfit(ligne);
 
       existingProduct.quantitySold += ligne.quantite;
       existingProduct.revenue = existingProduct.revenue.plus(ligne.sousTotal);
+      existingProduct.netProfit = existingProduct.netProfit.plus(lineNetProfit);
+      existingStore.netProfit = existingStore.netProfit.plus(lineNetProfit);
+      netProfit = netProfit.plus(lineNetProfit);
       topProductsMap.set(productKey, existingProduct);
     }
   }
@@ -1114,6 +2233,7 @@ const getReports = async (req, res) => {
     .map((store) => ({
       storeName: store.storeName,
       revenue: decimalToNumber(store.revenue),
+      netProfit: decimalToNumber(store.netProfit),
       salesCount: store.salesCount,
     }))
     .sort((a, b) => b.revenue - a.revenue);
@@ -1123,12 +2243,14 @@ const getReports = async (req, res) => {
       productName: product.productName,
       quantitySold: product.quantitySold,
       revenue: decimalToNumber(product.revenue),
+      netProfit: decimalToNumber(product.netProfit),
     }))
     .sort((a, b) => b.quantitySold - a.quantitySold)
     .slice(0, 10);
 
   return res.status(200).json({
     revenue: decimalToNumber(revenue),
+    netProfit: decimalToNumber(netProfit),
     salesCount: sales.length,
     averageBasket:
       sales.length > 0 ? decimalToNumber(revenue.div(sales.length)) : 0,
@@ -1142,6 +2264,11 @@ const getUsers = async (req, res) => {
   const users = await prisma.utilisateur.findMany({
     include: {
       pointDeVente: {
+        select: {
+          nom: true,
+        },
+      },
+      caisse: {
         select: {
           nom: true,
         },
@@ -1160,21 +2287,35 @@ const getUsers = async (req, res) => {
       role: mapRoleToApi(user.role),
       storeId: user.pointDeVenteId,
       storeName: user.pointDeVente ? user.pointDeVente.nom : null,
+      cashRegisterId: user.caisseId,
+      cashRegisterName: user.caisse ? user.caisse.nom : null,
       status: user.estActif ? "active" : "inactive",
     }))
   );
 };
 
 const getStores = async (req, res) => {
+  const employeeStoreId = getEmployeeStoreId(req.user);
   const todayStart = getStartOfDay(new Date());
   const todayEnd = getEndOfDay(new Date());
 
+  if (req.user.role === "EMPLOYE" && !employeeStoreId) {
+    throw createHttpError(403, "Employee is not assigned to a store.");
+  }
+
   const [stores, todaySales] = await Promise.all([
     prisma.pointDeVente.findMany({
+      where:
+        req.user.role === "EMPLOYE" && employeeStoreId
+          ? {
+              id: employeeStoreId,
+            }
+          : {},
       include: {
         _count: {
           select: {
             utilisateurs: true,
+            caisses: true,
           },
         },
       },
@@ -1188,6 +2329,11 @@ const getStores = async (req, res) => {
           gte: todayStart,
           lte: todayEnd,
         },
+        ...(req.user.role === "EMPLOYE" && employeeStoreId
+          ? {
+              pointDeVenteId: employeeStoreId,
+            }
+          : {}),
       },
       select: {
         pointDeVenteId: true,
@@ -1211,6 +2357,7 @@ const getStores = async (req, res) => {
       city: extractCityFromAddress(store.adresse),
       address: store.adresse || "",
       usersCount: store._count.utilisateurs,
+      cashRegistersCount: store._count.caisses,
       todayRevenue: decimalToNumber(
         revenueByStore.get(store.id) || new Prisma.Decimal(0)
       ),
@@ -1219,17 +2366,87 @@ const getStores = async (req, res) => {
   );
 };
 
+const getAutoReportStatus = async (req, res) =>
+  res.status(200).json({
+    isActive: getReportStatus(),
+  });
+
+const toggleAutoReportStatus = async (req, res) => {
+  const { isActive } = req.body || {};
+
+  if (typeof isActive !== "boolean") {
+    throw createHttpError(400, "isActive must be a boolean.");
+  }
+
+  if (isActive && !isEmailConfigured()) {
+    throw createHttpError(
+      400,
+      "Configuration email manquante. Renseignez EMAIL_USER et EMAIL_PASS avant activation."
+    );
+  }
+
+  return res.status(200).json({
+    isActive: setReportStatus(isActive),
+  });
+};
+
+const getCashRegisters = async (req, res) => {
+  const requestedStoreId = parseOptionalPositiveInteger(req.query.storeId);
+  const employeeStoreId = getEmployeeStoreId(req.user);
+
+  if (Number.isNaN(requestedStoreId)) {
+    throw createHttpError(400, "storeId must be a valid positive integer.");
+  }
+
+  if (req.user.role === "EMPLOYE" && !employeeStoreId) {
+    throw createHttpError(403, "Employee is not assigned to a store.");
+  }
+
+  const storeId = req.user.role === "EMPLOYE" ? employeeStoreId : requestedStoreId;
+
+  const cashRegisters = await prisma.caisse.findMany({
+    where: storeId
+      ? {
+          pointDeVenteId: storeId,
+        }
+      : {},
+    include: {
+      pointDeVente: {
+        select: {
+          nom: true,
+        },
+      },
+    },
+    orderBy: [{ pointDeVenteId: "asc" }, { id: "asc" }],
+  });
+
+  return res.status(200).json(cashRegisters.map(toApiCashRegister));
+};
+
 module.exports = {
   login,
   getProducts,
   getProductByBarcode,
   getStocks,
+  getStockAlerts,
   stockIn,
   stockCorrection,
   createSale,
   getSales,
+  getCustomers,
+  createCustomer,
+  getCustomerById,
+  getCustomerSales,
+  payCustomerCredit,
+  deleteCustomer,
+  getCustomerCredit,
   getSuppliers,
   getReports,
+  getAutoReportStatus,
+  toggleAutoReportStatus,
   getUsers,
   getStores,
+  getCashRegisters,
+  cancelSale,
+  returnSale,
 };

@@ -1,14 +1,46 @@
-const bcrypt = require("bcrypt");
+const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const prisma = require("../config/prisma");
+const { validateSchema } = require("../utils/validation");
+const {
+  authRegisterSchema,
+  authLoginSchema,
+} = require("../utils/validationSchemas");
+
+const mapRoleForApi = (role) => (role === "ADMIN" ? "admin" : "employe");
+
+const userInclude = {
+  pointDeVente: {
+    select: {
+      id: true,
+      nom: true,
+    },
+  },
+  caisse: {
+    select: {
+      id: true,
+      nom: true,
+      code: true,
+      pointDeVenteId: true,
+      estActive: true,
+    },
+  },
+};
 
 const formatUser = (user) => ({
   id: user.id,
   nom: user.nom,
+  name: user.nom,
   email: user.email,
-  role: user.role,
+  role: mapRoleForApi(user.role),
+  roleCode: user.role,
   estActif: user.estActif,
   pointDeVenteId: user.pointDeVenteId,
+  storeId: user.pointDeVenteId,
+  storeName: user.pointDeVente ? user.pointDeVente.nom : null,
+  caisseId: user.caisseId,
+  cashRegisterId: user.caisseId,
+  cashRegisterName: user.caisse ? user.caisse.nom : null,
   createdAt: user.createdAt,
   updatedAt: user.updatedAt,
 });
@@ -22,6 +54,7 @@ const createToken = (user) =>
       email: user.email,
       role: user.role,
       pointDeVenteId: user.pointDeVenteId,
+      caisseId: user.caisseId,
     },
     process.env.JWT_SECRET,
     {
@@ -72,9 +105,23 @@ const parsePointDeVenteId = (value) => {
   return Number.isInteger(parsedValue) && parsedValue > 0 ? parsedValue : NaN;
 };
 
+const parseCaisseId = (value) => {
+  if (value === undefined || value === null) {
+    return null;
+  }
+
+  if (typeof value === "string" && value.trim() === "") {
+    return null;
+  }
+
+  const parsedValue = Number(value);
+  return Number.isInteger(parsedValue) && parsedValue > 0 ? parsedValue : NaN;
+};
+
 const register = async (req, res) => {
   try {
-    const { nom, email, motDePasse, role, pointDeVenteId } = req.body;
+    const parsedInput = validateSchema(authRegisterSchema, req.body);
+    const { nom, email, motDePasse, role, pointDeVenteId, caisseId } = parsedInput;
     const adminRequester = await getAdminRequester(req);
     const normalizedNom = normalizeRequiredString(nom);
     const normalizedEmail = normalizeRequiredString(email).toLowerCase();
@@ -92,6 +139,7 @@ const register = async (req, res) => {
         ? requestedRole
         : "EMPLOYE";
     const parsedPointDeVenteId = parsePointDeVenteId(pointDeVenteId);
+    const parsedCaisseId = parseCaisseId(caisseId);
 
     if (Number.isNaN(parsedPointDeVenteId)) {
       return res.status(400).json({
@@ -99,9 +147,21 @@ const register = async (req, res) => {
       });
     }
 
+    if (Number.isNaN(parsedCaisseId)) {
+      return res.status(400).json({
+        message: "caisseId doit etre un nombre entier valide.",
+      });
+    }
+
     if (userRole === "EMPLOYE" && !parsedPointDeVenteId) {
       return res.status(400).json({
         message: "Un employe doit etre rattache a un point de vente.",
+      });
+    }
+
+    if (userRole === "EMPLOYE" && !parsedCaisseId) {
+      return res.status(400).json({
+        message: "Un employe doit etre rattache a une caisse.",
       });
     }
 
@@ -127,6 +187,35 @@ const register = async (req, res) => {
       }
     }
 
+    if (parsedCaisseId) {
+      const caisse = await prisma.caisse.findUnique({
+        where: { id: parsedCaisseId },
+        select: {
+          id: true,
+          pointDeVenteId: true,
+          estActive: true,
+        },
+      });
+
+      if (!caisse) {
+        return res.status(404).json({
+          message: "Caisse introuvable.",
+        });
+      }
+
+      if (parsedPointDeVenteId && caisse.pointDeVenteId !== parsedPointDeVenteId) {
+        return res.status(400).json({
+          message: "La caisse selectionnee n'appartient pas au point de vente choisi.",
+        });
+      }
+
+      if (!caisse.estActive) {
+        return res.status(400).json({
+          message: "La caisse selectionnee est inactive.",
+        });
+      }
+    }
+
     const hashedPassword = await bcrypt.hash(rawPassword, 10);
 
     const user = await prisma.utilisateur.create({
@@ -136,7 +225,9 @@ const register = async (req, res) => {
         motDePasse: hashedPassword,
         role: userRole,
         pointDeVenteId: parsedPointDeVenteId,
+        caisseId: parsedCaisseId,
       },
+      include: userInclude,
     });
 
     return res.status(201).json({
@@ -144,6 +235,12 @@ const register = async (req, res) => {
       user: formatUser(user),
     });
   } catch (error) {
+    if (error?.status) {
+      return res.status(error.status).json({
+        message: error.message,
+      });
+    }
+
     console.error("Register error:", error);
     return res.status(500).json({
       message: "Erreur serveur lors de la creation du compte.",
@@ -153,7 +250,7 @@ const register = async (req, res) => {
 
 const login = async (req, res) => {
   try {
-    const { email, motDePasse } = req.body;
+    const { email, motDePasse } = validateSchema(authLoginSchema, req.body);
     const normalizedEmail = normalizeRequiredString(email).toLowerCase();
     const rawPassword = String(motDePasse || "");
 
@@ -171,6 +268,7 @@ const login = async (req, res) => {
 
     const user = await prisma.utilisateur.findUnique({
       where: { email: normalizedEmail },
+      include: userInclude,
     });
 
     if (!user) {
@@ -201,6 +299,12 @@ const login = async (req, res) => {
       user: formatUser(user),
     });
   } catch (error) {
+    if (error?.status) {
+      return res.status(error.status).json({
+        message: error.message,
+      });
+    }
+
     console.error("Login error:", error);
     return res.status(500).json({
       message: "Erreur serveur lors de la connexion.",
@@ -209,8 +313,13 @@ const login = async (req, res) => {
 };
 
 const getMe = async (req, res) => {
+  const user = await prisma.utilisateur.findUnique({
+    where: { id: req.user.id },
+    include: userInclude,
+  });
+
   return res.status(200).json({
-    user: req.user,
+    user: user ? formatUser(user) : formatUser(req.user),
   });
 };
 

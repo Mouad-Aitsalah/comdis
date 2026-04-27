@@ -8,54 +8,70 @@ const navigationItems = [
     description: "Vue globale des ventes et operations.",
     path: ROUTE_PATHS.DASHBOARD,
     index: "01",
+    roles: ["admin"],
   },
   {
     label: "POS / Caisse",
     description: "Encaissement et passage en caisse.",
     path: ROUTE_PATHS.POS,
     index: "02",
+    roles: ["admin", "employe"],
   },
   {
     label: "Products / Produits",
     description: "Catalogue, prix et produits.",
     path: ROUTE_PATHS.PRODUCTS,
     index: "03",
+    roles: ["admin", "employe"],
   },
   {
     label: "Stock",
     description: "Niveaux et ajustements de stock.",
     path: ROUTE_PATHS.STOCK,
     index: "04",
+    roles: ["admin", "employe"],
   },
   {
     label: "Suppliers / Fournisseurs",
     description: "Contacts et partenaires fournisseurs.",
     path: ROUTE_PATHS.SUPPLIERS,
     index: "05",
+    roles: ["admin"],
   },
   {
     label: "Sales History / Historique ventes",
     description: "Tickets, ventes et synchronisation.",
     path: ROUTE_PATHS.SALES,
     index: "06",
+    roles: ["admin", "employe"],
   },
   {
     label: "Reports / Rapports",
     description: "Analyse jour, semaine et mois.",
     path: ROUTE_PATHS.REPORTS,
     index: "07",
+    roles: ["admin"],
   },
   {
     label: "Users / Utilisateurs",
     description: "Profils, roles et affectations.",
     path: ROUTE_PATHS.USERS,
     index: "08",
+    roles: ["admin"],
   },
   {
     label: "Stores / Points de vente",
     description: "Performance des points de vente.",
     path: ROUTE_PATHS.STORES,
     index: "09",
+    roles: ["admin"],
+  },
+  {
+    label: "Clients",
+    description: "Achats, credits et profils clients.",
+    path: ROUTE_PATHS.CUSTOMERS,
+    index: "10",
+    roles: ["admin", "employe"],
   },
 ];
 
@@ -96,14 +112,22 @@ const sectionHighlights = {
     title: "Reseau de magasins",
     subtitle: "Surveiller les points de vente et leur revenu du jour.",
   },
+  [ROUTE_PATHS.CUSTOMERS]: {
+    title: "Gestion clients",
+    subtitle: "Suivre les profils, achats et credits de chaque client.",
+  },
 };
 
 function MainLayout() {
   const navigate = useNavigate();
   const location = useLocation();
   const currentUser = getCurrentUser();
+  const visibleNavigationItems = navigationItems.filter((item) =>
+    item.roles.includes(currentUser?.role || "employe")
+  );
   const activeSection =
-    navigationItems.find((item) => item.path === location.pathname) ||
+    visibleNavigationItems.find((item) => item.path === location.pathname) ||
+    visibleNavigationItems[0] ||
     navigationItems[0];
   const sectionHighlight =
     sectionHighlights[location.pathname] ||
@@ -116,6 +140,12 @@ function MainLayout() {
         .slice(0, 2)
         .toUpperCase()
     : "MP";
+  const accessLabel =
+    currentUser?.role === "admin"
+      ? "Global access"
+      : [currentUser?.storeName, currentUser?.cashRegisterName]
+          .filter(Boolean)
+          .join(" - ") || "Affectation en attente";
 
   const handleLogout = () => {
     logout();
@@ -135,7 +165,7 @@ function MainLayout() {
         </div>
 
         <nav className="sidebar-nav">
-          {navigationItems.map((item) => (
+          {visibleNavigationItems.map((item) => (
             <NavLink
               key={item.path}
               className={({ isActive }) =>
@@ -162,56 +192,74 @@ function MainLayout() {
       </aside>
 
       <main className="content-area">
-        <div className="topbar-shell">
-          <div>
-            <p className="topbar-title">{activeSection.label}</p>
-            <p className="topbar-subtitle">{sectionHighlight.title}</p>
-          </div>
-
-          <div className="topbar-actions">
-            <div className="topbar-chip">Systeme en ligne</div>
-
-            <div className="topbar-card user-card">
-              <div className="user-avatar">{initials}</div>
-              <div>
-                <p className="topbar-label">Utilisateur connecte</p>
-                <p className="topbar-value">{currentUser?.name || "Demo User"}</p>
-                <p className="topbar-meta">
-                  {currentUser?.role || "employe"} -{" "}
-                  {currentUser?.email || "employee@multipos.com"}
+        <div className="content-shell">
+          <section className="dashboard-header">
+            <div className="dashboard-header-top">
+              <div className="dashboard-header-copy">
+                <p className="topbar-title">{activeSection.label}</p>
+                <h1 className="dashboard-header-title">{sectionHighlight.title}</h1>
+                <p className="dashboard-header-subtitle">
+                  {sectionHighlight.subtitle}
                 </p>
+              </div>
+
+              <div className="dashboard-header-user">
+                <div className="topbar-card user-card">
+                  <div className="user-avatar">{initials}</div>
+                  <div>
+                    <p className="topbar-label">Utilisateur connecte</p>
+                    <p className="topbar-value">
+                      {currentUser?.name || "Demo User"}
+                    </p>
+                    <p className="topbar-meta">{currentUser?.role || "employe"}</p>
+                    <p className="topbar-meta">{accessLabel}</p>
+                  </div>
+                </div>
+
+                <button
+                  className="ghost-button header-logout-button"
+                  type="button"
+                  onClick={handleLogout}
+                >
+                  Logout
+                </button>
               </div>
             </div>
 
-            <button
-              className="ghost-button"
-              type="button"
-              onClick={handleLogout}
-            >
-              Logout
-            </button>
-          </div>
-        </div>
+            <div className="dashboard-header-grid">
+              <div className="topbar-card header-stat-card">
+                <div>
+                  <p className="topbar-label">Business snapshot</p>
+                  <p className="topbar-value">4 magasins suivis</p>
+                  <p className="topbar-meta">{sectionHighlight.subtitle}</p>
+                </div>
+              </div>
 
-        <div className="topbar">
-          <div className="topbar-card">
-            <div>
-              <p className="topbar-label">Business snapshot</p>
-              <p className="topbar-value">4 magasins suivis</p>
-              <p className="topbar-meta">{sectionHighlight.subtitle}</p>
+              <div className="topbar-card header-stat-card">
+                <div className="header-status-row">
+                  <div>
+                    <p className="topbar-label">System status</p>
+                    <p className="topbar-value">Systeme en ligne</p>
+                    <p className="topbar-meta">
+                      Suivi en continu des ventes, stocks et activites.
+                    </p>
+                  </div>
+                  <span className="topbar-chip">En ligne</span>
+                </div>
+              </div>
+
+              <div className="topbar-card header-stat-card">
+                <div>
+                  <p className="topbar-label">Today focus</p>
+                  <p className="topbar-value">{activeSection.label}</p>
+                  <p className="topbar-meta">{activeSection.description}</p>
+                </div>
+              </div>
             </div>
-          </div>
+          </section>
 
-          <div className="topbar-card">
-            <div>
-              <p className="topbar-label">Today focus</p>
-              <p className="topbar-value">{activeSection.label}</p>
-              <p className="topbar-meta">Execution rapide et supervision continue</p>
-            </div>
-          </div>
+          <Outlet />
         </div>
-
-        <Outlet />
       </main>
     </div>
   );

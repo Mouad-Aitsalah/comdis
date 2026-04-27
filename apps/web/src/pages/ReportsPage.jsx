@@ -1,9 +1,11 @@
 import { useEffect, useMemo, useState } from "react";
 import api from "../services/api";
+import Badge from "../components/Badge";
 import DataTable from "../components/DataTable";
 import PageHeader from "../components/PageHeader";
 import SectionCard from "../components/SectionCard";
 import StatCard from "../components/StatCard";
+import { downloadBlob } from "../utils/downloadBlob";
 import { formatCurrencyDh } from "../utils/formatters";
 
 const periodOptions = [
@@ -15,8 +17,19 @@ const periodOptions = [
 function ReportsPage() {
   const [period, setPeriod] = useState("day");
   const [report, setReport] = useState(null);
+  const [stores, setStores] = useState([]);
+  const [autoReportEnabled, setAutoReportEnabled] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
+  const [isExportingExcel, setIsExportingExcel] = useState(false);
+  const [isExportingPdf, setIsExportingPdf] = useState(false);
+  const [isTogglingAutoReport, setIsTogglingAutoReport] = useState(false);
   const [errorMessage, setErrorMessage] = useState("");
+  const [storesError, setStoresError] = useState("");
+  const [storeExportError, setStoreExportError] = useState("");
+  const [autoReportError, setAutoReportError] = useState("");
+  const [autoReportNotice, setAutoReportNotice] = useState("");
+  const [exportingStoreId, setExportingStoreId] = useState(null);
+  const [exportingStoreFormat, setExportingStoreFormat] = useState("");
 
   useEffect(() => {
     let isMounted = true;
@@ -25,19 +38,32 @@ function ReportsPage() {
       try {
         setIsLoading(true);
         setErrorMessage("");
+        setStoresError("");
 
-        const response = await api.get("/reports", {
-          params: { period },
-        });
+        const [reportResponse, storesResponse] = await Promise.all([
+          api.get("/reports", {
+            params: { period },
+          }),
+          api.get("/stores"),
+        ]);
 
         if (isMounted) {
-          setReport(response.data || null);
+          setReport(reportResponse.data || null);
+          setStores(
+            Array.isArray(storesResponse.data)
+              ? storesResponse.data
+              : storesResponse.data?.data || []
+          );
         }
       } catch (error) {
         if (isMounted) {
-          setErrorMessage(
+          const message =
             error.response?.data?.message ||
-              "Impossible de charger les rapports pour le moment."
+            "Impossible de charger les rapports pour le moment.";
+          setErrorMessage(message);
+          setStoresError(
+            error.response?.data?.message ||
+              "Impossible de charger les points de vente pour le moment."
           );
         }
       } finally {
@@ -54,6 +80,35 @@ function ReportsPage() {
     };
   }, [period]);
 
+  useEffect(() => {
+    let isMounted = true;
+
+    async function fetchAutoReportStatus() {
+      try {
+        setAutoReportError("");
+
+        const response = await api.get("/reports/auto-status");
+
+        if (isMounted) {
+          setAutoReportEnabled(Boolean(response.data?.isActive));
+        }
+      } catch (error) {
+        if (isMounted) {
+          setAutoReportError(
+            error.response?.data?.message ||
+              "Impossible de charger le statut du rapport automatique."
+          );
+        }
+      }
+    }
+
+    fetchAutoReportStatus();
+
+    return () => {
+      isMounted = false;
+    };
+  }, []);
+
   const statItems = useMemo(
     () => [
       {
@@ -63,10 +118,16 @@ function ReportsPage() {
         tone: "success",
       },
       {
+        label: "Benefice net",
+        value: isLoading ? "Chargement..." : formatCurrencyDh(report?.netProfit || 0),
+        detail: "Marge nette calculee a partir des ventes.",
+        tone: "info",
+      },
+      {
         label: "Nombre de ventes",
         value: isLoading ? "Chargement..." : report?.salesCount || 0,
         detail: "Transactions enregistrees sur la periode.",
-        tone: "info",
+        tone: "default",
       },
       {
         label: "Panier moyen",
@@ -86,6 +147,115 @@ function ReportsPage() {
     [isLoading, report]
   );
 
+  const revenueByStoreName = useMemo(
+    () =>
+      new Map(
+        (report?.salesByStore || []).map((item) => [
+          item.storeName || item.store,
+          item.revenue || 0,
+        ])
+      ),
+    [report]
+  );
+
+  const handleExportReport = async (format) => {
+    try {
+      if (format === "excel") {
+        setIsExportingExcel(true);
+      } else {
+        setIsExportingPdf(true);
+      }
+
+      setErrorMessage("");
+
+      const response = await api.get(`/exports/reports/${format}`, {
+        params: { period },
+        responseType: "blob",
+      });
+
+      downloadBlob(
+        response,
+        format === "excel" ? `report-${period}.xlsx` : `report-${period}.pdf`
+      );
+    } catch (error) {
+      if (error.response?.data instanceof Blob) {
+        const message = await error.response.data.text();
+        setErrorMessage(message || "Impossible d'exporter le rapport.");
+      } else {
+        setErrorMessage(
+          error.response?.data?.message ||
+            "Impossible d'exporter le rapport pour le moment."
+        );
+      }
+    } finally {
+      setIsExportingExcel(false);
+      setIsExportingPdf(false);
+    }
+  };
+
+  const buildStoreFilename = (storeName, format) => {
+    const safeStoreName = String(storeName || "magasin")
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/gi, "-")
+      .replace(/^-+|-+$/g, "");
+
+    return `rapport-magasin-${safeStoreName || "magasin"}-${period}.${format}`;
+  };
+
+  const handleExportStore = async (store, format) => {
+    try {
+      setStoreExportError("");
+      setExportingStoreId(store.id);
+      setExportingStoreFormat(format);
+
+      const response = await api.get(`/exports/stores/${store.id}/${format}`, {
+        params: { period },
+        responseType: "blob",
+      });
+
+      downloadBlob(response, buildStoreFilename(store.name, format));
+    } catch (error) {
+      if (error.response?.data instanceof Blob) {
+        const message = await error.response.data.text();
+        setStoreExportError(message || "Erreur lors de l'export du rapport magasin.");
+      } else {
+        setStoreExportError("Erreur lors de l'export du rapport magasin.");
+      }
+    } finally {
+      setExportingStoreId(null);
+      setExportingStoreFormat("");
+    }
+  };
+
+  const handleToggleAutoReport = async (event) => {
+    const nextValue = event.target.checked;
+
+    try {
+      setIsTogglingAutoReport(true);
+      setAutoReportError("");
+      setAutoReportNotice("");
+
+      const response = await api.post("/reports/auto-toggle", {
+        isActive: nextValue,
+      });
+
+      setAutoReportEnabled(Boolean(response.data?.isActive));
+      setAutoReportNotice(
+        nextValue
+          ? "Envoi automatique active."
+          : "Envoi automatique desactive."
+      );
+    } catch (error) {
+      setAutoReportError(
+        error.response?.data?.message ||
+          "Impossible de mettre a jour l'envoi automatique."
+      );
+    } finally {
+      setIsTogglingAutoReport(false);
+    }
+  };
+
   return (
     <div>
       <PageHeader
@@ -93,20 +263,40 @@ function ReportsPage() {
         title="Rapports analytiques"
         description="Comparer les ventes par periode, magasin et produit pour faciliter les decisions operationnelles."
         actions={
-          <div className="period-selector">
-            {periodOptions.map((option) => (
+          <>
+            <div className="period-selector">
+              {periodOptions.map((option) => (
+                <button
+                  key={option.key}
+                  className={`period-button ${
+                    period === option.key ? "active" : ""
+                  }`}
+                  type="button"
+                  onClick={() => setPeriod(option.key)}
+                >
+                  {option.label}
+                </button>
+              ))}
+            </div>
+            <div className="page-actions">
               <button
-                key={option.key}
-                className={`period-button ${
-                  period === option.key ? "active" : ""
-                }`}
+                className="ghost-button"
                 type="button"
-                onClick={() => setPeriod(option.key)}
+                onClick={() => handleExportReport("excel")}
+                disabled={isExportingExcel || isExportingPdf}
               >
-                {option.label}
+                {isExportingExcel ? "Export Excel..." : "Exporter Excel"}
               </button>
-            ))}
-          </div>
+              <button
+                className="primary-button"
+                type="button"
+                onClick={() => handleExportReport("pdf")}
+                disabled={isExportingExcel || isExportingPdf}
+              >
+                {isExportingPdf ? "Export PDF..." : "Exporter PDF"}
+              </button>
+            </div>
+          </>
         }
       />
 
@@ -136,6 +326,7 @@ function ReportsPage() {
               { key: "store", label: "Magasin" },
               { key: "salesCount", label: "Nb ventes" },
               { key: "revenue", label: "Revenu" },
+              { key: "netProfit", label: "Benefice net" },
             ]}
             data={report?.salesByStore || []}
             emptyTitle={isLoading ? "Chargement..." : "Aucune donnee disponible"}
@@ -149,6 +340,7 @@ function ReportsPage() {
                 <td>{item.store || item.storeName || "-"}</td>
                 <td>{item.salesCount || item.count || 0}</td>
                 <td>{formatCurrencyDh(item.revenue || 0)}</td>
+                <td>{formatCurrencyDh(item.netProfit || 0)}</td>
               </tr>
             )}
           />
@@ -163,6 +355,7 @@ function ReportsPage() {
               { key: "name", label: "Produit" },
               { key: "quantity", label: "Quantite" },
               { key: "revenue", label: "Revenu" },
+              { key: "netProfit", label: "Benefice net" },
             ]}
             data={report?.topProducts || []}
             emptyTitle={isLoading ? "Chargement..." : "Aucun produit disponible"}
@@ -176,11 +369,118 @@ function ReportsPage() {
                 <td>{item.name || item.productName || "-"}</td>
                 <td>{item.quantitySold || item.quantity || item.unitsSold || 0}</td>
                 <td>{formatCurrencyDh(item.revenue || 0)}</td>
+                <td>{formatCurrencyDh(item.netProfit || 0)}</td>
               </tr>
             )}
           />
         </SectionCard>
       </div>
+
+      <SectionCard
+        title="Rapports par magasin"
+        description="Exporter un rapport detaille pour chaque point de vente."
+      >
+        {storeExportError ? (
+          <div className="inline-notice error">{storeExportError}</div>
+        ) : null}
+
+        {storesError ? <div className="inline-notice error">{storesError}</div> : null}
+
+        <div className="store-grid">
+          {isLoading && !stores.length ? (
+            <div className="empty-state">Chargement des magasins...</div>
+          ) : stores.length ? (
+            stores.map((store) => {
+              const currentPeriodRevenue =
+                revenueByStoreName.get(store.name) ??
+                store.todayRevenue ??
+                store.revenueToday ??
+                0;
+
+              return (
+                <article className="store-card" key={store.id}>
+                  <div className="store-card-header">
+                    <div>
+                      <p className="page-eyebrow">{store.city || "Magasin"}</p>
+                      <h3 className="store-card-title">{store.name}</h3>
+                    </div>
+                    <Badge tone="info">{period}</Badge>
+                  </div>
+
+                  <p className="store-card-address">{store.address || "-"}</p>
+
+                  <div className="store-card-metrics">
+                    <div className="detail-stat">
+                      <span>Utilisateurs</span>
+                      <strong>{store.usersCount || 0}</strong>
+                    </div>
+                    <div className="detail-stat">
+                      <span>Caisses</span>
+                      <strong>{store.cashRegistersCount || 0}</strong>
+                    </div>
+                    <div className="detail-stat">
+                      <span>CA periode</span>
+                      <strong>{formatCurrencyDh(currentPeriodRevenue)}</strong>
+                    </div>
+                  </div>
+
+                  <div className="store-card-actions">
+                    <button
+                      className="primary-button"
+                      type="button"
+                      onClick={() => handleExportStore(store, "pdf")}
+                      disabled={Boolean(exportingStoreId)}
+                    >
+                      {exportingStoreId === store.id && exportingStoreFormat === "pdf"
+                        ? "Export..."
+                        : "Exporter PDF"}
+                    </button>
+                    <button
+                      className="ghost-button"
+                      type="button"
+                      onClick={() => handleExportStore(store, "excel")}
+                      disabled={Boolean(exportingStoreId)}
+                    >
+                      {exportingStoreId === store.id && exportingStoreFormat === "excel"
+                        ? "Export..."
+                        : "Exporter Excel"}
+                    </button>
+                  </div>
+                </article>
+              );
+            })
+          ) : (
+            <div className="empty-state">
+              Aucun point de vente disponible pour l'export.
+            </div>
+          )}
+        </div>
+      </SectionCard>
+
+      <SectionCard
+        title="Envoi automatique par email"
+        description="Recevoir chaque jour le rapport du Point de Vente Est par email."
+      >
+        {autoReportNotice ? (
+          <div className="inline-notice success">{autoReportNotice}</div>
+        ) : null}
+
+        {autoReportError ? (
+          <div className="inline-notice error">{autoReportError}</div>
+        ) : null}
+
+        <label className="toggle-report">
+          <input
+            type="checkbox"
+            checked={autoReportEnabled}
+            onChange={handleToggleAutoReport}
+            disabled={isTogglingAutoReport}
+          />
+          <span>
+            Envoyer automatiquement le rapport du Point de Vente Est chaque jour
+          </span>
+        </label>
+      </SectionCard>
     </div>
   );
 }

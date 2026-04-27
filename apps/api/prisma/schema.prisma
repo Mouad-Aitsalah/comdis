@@ -16,19 +16,22 @@ enum StockMovementType {
   IN
   CORRECTION
   SALE
+  CANCEL
+  RETURN
 }
 
 model PointDeVente {
-  id           Int           @id @default(autoincrement())
-  nom          String
-  adresse      String?
-  telephone    String?
-  utilisateurs Utilisateur[]
-  stocks       Stock[]
+  id             Int             @id @default(autoincrement())
+  nom            String
+  adresse        String?
+  telephone      String?
+  utilisateurs   Utilisateur[]
+  caisses        Caisse[]
+  stocks         Stock[]
   stockMovements StockMovement[]
-  ventes       Vente[]
-  createdAt    DateTime      @default(now())
-  updatedAt    DateTime      @updatedAt
+  ventes         Vente[]
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
 }
 
 model Utilisateur {
@@ -40,11 +43,31 @@ model Utilisateur {
   estActif       Boolean         @default(true)
   pointDeVenteId Int?
   pointDeVente   PointDeVente?   @relation(fields: [pointDeVenteId], references: [id])
+  caisseId       Int?
+  caisse         Caisse?         @relation(fields: [caisseId], references: [id])
   ventes         Vente[]
   createdAt      DateTime        @default(now())
   updatedAt      DateTime        @updatedAt
 
   @@index([pointDeVenteId])
+  @@index([caisseId])
+}
+
+model Caisse {
+  id             Int           @id @default(autoincrement())
+  nom            String
+  code           String        @unique
+  pointDeVenteId Int
+  estActive      Boolean       @default(true)
+  pointDeVente   PointDeVente  @relation(fields: [pointDeVenteId], references: [id], onDelete: Cascade)
+  utilisateurs   Utilisateur[]
+  ventes         Vente[]
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+
+  @@unique([pointDeVenteId, nom])
+  @@index([pointDeVenteId])
+  @@index([estActive])
 }
 
 model Fournisseur {
@@ -72,11 +95,41 @@ model Produit {
   stocks        Stock[]
   stockMovements StockMovement[]
   lignesVente   VenteLigne[]
+  retours       Retour[]
   createdAt     DateTime     @default(now())
   updatedAt     DateTime     @updatedAt
 
   @@index([categorie])
   @@index([fournisseurId])
+}
+
+model Client {
+  id           Int      @id @default(autoincrement())
+  numeroClient Int      @unique
+  nom          String
+  telephone    String?
+  email        String?
+  credit       Decimal  @default(0) @db.Decimal(10, 2)
+  estActif     Boolean  @default(true)
+  ventes       Vente[]
+  paiements    PaiementClient[]
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@index([nom])
+  @@index([estActif])
+}
+
+model PaiementClient {
+  id        Int      @id @default(autoincrement())
+  clientId  Int
+  montant   Decimal  @db.Decimal(10, 2)
+  note      String?
+  createdAt DateTime @default(now())
+  client    Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+
+  @@index([clientId])
+  @@index([createdAt])
 }
 
 model Stock {
@@ -116,19 +169,27 @@ model Vente {
   numeroTicket   String       @unique
   total          Decimal      @db.Decimal(10, 2)
   paymentMethod  String       @default("cash")
+  status         String       @default("completed")
   dateVente      DateTime     @default(now())
   pointDeVenteId Int
+  caisseId       Int
   utilisateurId  Int
+  clientId       Int?
   pointDeVente   PointDeVente @relation(fields: [pointDeVenteId], references: [id])
+  caisse         Caisse       @relation(fields: [caisseId], references: [id])
   utilisateur    Utilisateur  @relation(fields: [utilisateurId], references: [id])
+  client         Client?      @relation(fields: [clientId], references: [id])
   lignes         VenteLigne[]
+  retours        Retour[]
   createdAt      DateTime     @default(now())
   updatedAt      DateTime     @updatedAt
 
   @@index([dateVente])
   @@index([pointDeVenteId])
   @@index([pointDeVenteId, dateVente])
+  @@index([caisseId])
   @@index([utilisateurId])
+  @@index([clientId])
 }
 
 model VenteLigne {
@@ -142,6 +203,20 @@ model VenteLigne {
   produit      Produit  @relation(fields: [produitId], references: [id])
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
+
+  @@index([venteId])
+  @@index([produitId])
+}
+
+model Retour {
+  id        Int      @id @default(autoincrement())
+  venteId   Int
+  produitId Int
+  quantite  Int
+  raison    String?
+  createdAt DateTime @default(now())
+  vente     Vente    @relation(fields: [venteId], references: [id], onDelete: Cascade)
+  produit   Produit  @relation(fields: [produitId], references: [id])
 
   @@index([venteId])
   @@index([produitId])

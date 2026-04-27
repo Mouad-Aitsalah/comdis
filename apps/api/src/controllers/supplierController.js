@@ -1,4 +1,9 @@
 const prisma = require("../config/prisma");
+const { validateSchema } = require("../utils/validation");
+const {
+  supplierCreateSchema,
+  supplierUpdateSchema,
+} = require("../utils/validationSchemas");
 
 const parseId = (value) => {
   const parsedValue = Number(value);
@@ -85,13 +90,10 @@ const getSupplierById = async (req, res) => {
 
 const createSupplier = async (req, res) => {
   try {
-    const { nom, email, telephone, adresse } = req.body;
-
-    if (!nom || !String(nom).trim()) {
-      return res.status(400).json({
-        message: "Le nom du fournisseur est obligatoire.",
-      });
-    }
+    const { nom, email, telephone, adresse } = validateSchema(
+      supplierCreateSchema,
+      req.body
+    );
 
     const normalizedEmail = normalizeOptionalString(email)?.toLowerCase();
     const normalizedTelephone = normalizeOptionalString(telephone);
@@ -124,6 +126,12 @@ const createSupplier = async (req, res) => {
       supplier: fournisseur,
     });
   } catch (error) {
+    if (error?.status) {
+      return res.status(error.status).json({
+        message: error.message,
+      });
+    }
+
     console.error("Create supplier error:", error);
     return res.status(500).json({
       message: "Erreur serveur lors de la creation du fournisseur.",
@@ -151,7 +159,10 @@ const updateSupplier = async (req, res) => {
       });
     }
 
-    const { nom, email, telephone, adresse } = req.body;
+    const { nom, email, telephone, adresse } = validateSchema(
+      supplierUpdateSchema,
+      req.body
+    );
     const data = {};
 
     if (nom !== undefined) {
@@ -208,6 +219,12 @@ const updateSupplier = async (req, res) => {
       supplier: fournisseur,
     });
   } catch (error) {
+    if (error?.status) {
+      return res.status(error.status).json({
+        message: error.message,
+      });
+    }
+
     console.error("Update supplier error:", error);
     return res.status(500).json({
       message: "Erreur serveur lors de la mise a jour du fournisseur.",

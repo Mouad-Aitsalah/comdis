@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import Modal from "../components/Modal";
 import PageHeader from "../components/PageHeader";
 import PaymentModal from "../components/PaymentModal";
 import SectionCard from "../components/SectionCard";
@@ -7,12 +8,57 @@ import { getCurrentUser } from "../store/authStore";
 import { useCart } from "../store/cartStore";
 import { formatCurrencyDh } from "../utils/formatters";
 
+const DEFAULT_CUSTOMER = {
+  id: 1,
+  customerNumber: 1,
+  name: "Client inconnu",
+  phone: null,
+  email: null,
+  credit: 0,
+  active: true,
+};
+
+const getCollection = (payload, keys = []) => {
+  if (Array.isArray(payload)) {
+    return payload;
+  }
+
+  for (const key of keys) {
+    if (Array.isArray(payload?.[key])) {
+      return payload[key];
+    }
+  }
+
+  return [];
+};
+
 function PosPage() {
   const [barcode, setBarcode] = useState("");
   const [products, setProducts] = useState([]);
+  const [stores, setStores] = useState([]);
+  const [cashRegisters, setCashRegisters] = useState([]);
+  const [customers, setCustomers] = useState([]);
+  const [selectedStoreId, setSelectedStoreId] = useState(null);
+  const [selectedCashRegisterId, setSelectedCashRegisterId] = useState(null);
+  const [selectedCustomerId, setSelectedCustomerId] = useState(DEFAULT_CUSTOMER.id);
+  const [selectedCustomerDetails, setSelectedCustomerDetails] = useState(DEFAULT_CUSTOMER);
+  const [customerSearchTerm, setCustomerSearchTerm] = useState("");
   const [isLoadingProducts, setIsLoadingProducts] = useState(true);
+  const [isLoadingStores, setIsLoadingStores] = useState(false);
+  const [isLoadingCashRegisters, setIsLoadingCashRegisters] = useState(false);
+  const [isLoadingCustomers, setIsLoadingCustomers] = useState(false);
+  const [isLoadingCustomerCredit, setIsLoadingCustomerCredit] = useState(false);
   const [isSearchingBarcode, setIsSearchingBarcode] = useState(false);
   const [isSubmittingSale, setIsSubmittingSale] = useState(false);
+  const [isCustomerModalOpen, setIsCustomerModalOpen] = useState(false);
+  const [isSubmittingCustomer, setIsSubmittingCustomer] = useState(false);
+  const [customerModalError, setCustomerModalError] = useState("");
+  const [customerNotice, setCustomerNotice] = useState({ type: "", message: "" });
+  const [newCustomerForm, setNewCustomerForm] = useState({
+    name: "",
+    phone: "",
+    email: "",
+  });
   const [notice, setNotice] = useState({
     type: "info",
     message:
@@ -20,6 +66,7 @@ function PosPage() {
   });
   const [isPaymentOpen, setIsPaymentOpen] = useState(false);
   const currentUser = getCurrentUser();
+  const isAdmin = currentUser?.role === "admin";
   const {
     items,
     addItem,
@@ -31,7 +78,45 @@ function PosPage() {
     totalAmount,
   } = useCart();
 
-  const activeStoreId = currentUser?.storeId || 1;
+  const activeStoreId = isAdmin ? selectedStoreId : currentUser?.storeId;
+  const activeCashRegisterId = isAdmin
+    ? selectedCashRegisterId
+    : currentUser?.cashRegisterId;
+  const activeStoreName = isAdmin
+    ? stores.find((store) => store.id === selectedStoreId)?.name || null
+    : currentUser?.storeName;
+  const activeCashRegisterName = isAdmin
+    ? cashRegisters.find((cashRegister) => cashRegister.id === selectedCashRegisterId)
+        ?.name || null
+    : currentUser?.cashRegisterName;
+  const selectedCustomer =
+    customers.find((customer) => customer.id === selectedCustomerId) ||
+    selectedCustomerDetails ||
+    DEFAULT_CUSTOMER;
+  const customerCredit =
+    selectedCustomerDetails?.id === selectedCustomer.id
+      ? selectedCustomerDetails.credit ?? selectedCustomer.credit ?? 0
+      : selectedCustomer.credit ?? 0;
+  const filteredCustomers = customers.filter((customer) => {
+    const query = customerSearchTerm.trim().toLowerCase();
+
+    if (!query) {
+      return true;
+    }
+
+    return (
+      String(customer.customerNumber).includes(query) ||
+      String(customer.name || "")
+        .toLowerCase()
+        .includes(query) ||
+      String(customer.phone || "")
+        .toLowerCase()
+        .includes(query)
+    );
+  });
+  const selectableCustomers = filteredCustomers.length
+    ? filteredCustomers
+    : [selectedCustomer];
 
   useEffect(() => {
     let isMounted = true;
@@ -40,7 +125,9 @@ function PosPage() {
       try {
         setIsLoadingProducts(true);
         const response = await api.get("/products");
-        const list = response.data?.data || [];
+        const list = Array.isArray(response.data)
+          ? response.data
+          : response.data?.data || [];
 
         if (isMounted) {
           setProducts(list);
@@ -68,13 +155,237 @@ function PosPage() {
     };
   }, []);
 
+  useEffect(() => {
+    if (!isAdmin) {
+      return undefined;
+    }
+
+    let isMounted = true;
+
+    async function fetchStores() {
+      try {
+        setIsLoadingStores(true);
+        const response = await api.get("/stores");
+        const list = Array.isArray(response.data)
+          ? response.data
+          : response.data?.data || [];
+
+        if (isMounted) {
+          setStores(list);
+        }
+      } catch (error) {
+        if (isMounted) {
+          setNotice({
+            type: "warning",
+            message:
+              error.response?.data?.message ||
+              "Impossible de charger les points de vente.",
+          });
+        }
+      } finally {
+        if (isMounted) {
+          setIsLoadingStores(false);
+        }
+      }
+    }
+
+    fetchStores();
+
+    return () => {
+      isMounted = false;
+    };
+  }, [isAdmin]);
+
+  useEffect(() => {
+    if (!isAdmin) {
+      return undefined;
+    }
+
+    if (!selectedStoreId) {
+      setCashRegisters([]);
+      setSelectedCashRegisterId(null);
+      return undefined;
+    }
+
+    let isMounted = true;
+
+    async function fetchCashRegisters() {
+      try {
+        setIsLoadingCashRegisters(true);
+        const response = await api.get("/cash-registers", {
+          params: { storeId: selectedStoreId },
+        });
+        const list = Array.isArray(response.data)
+          ? response.data
+          : response.data?.data || [];
+
+        if (isMounted) {
+          setCashRegisters(list);
+          setSelectedCashRegisterId((currentValue) =>
+            list.some((cashRegister) => cashRegister.id === currentValue)
+              ? currentValue
+              : null
+          );
+        }
+      } catch (error) {
+        if (isMounted) {
+          setCashRegisters([]);
+          setSelectedCashRegisterId(null);
+          setNotice({
+            type: "warning",
+            message:
+              error.response?.data?.message ||
+              "Impossible de charger les caisses pour ce point de vente.",
+          });
+        }
+      } finally {
+        if (isMounted) {
+          setIsLoadingCashRegisters(false);
+        }
+      }
+    }
+
+    fetchCashRegisters();
+
+    return () => {
+      isMounted = false;
+    };
+  }, [isAdmin, selectedStoreId]);
+
+  const fetchCustomers = async (customerIdToSelect = null) => {
+    const response = await api.get("/customers");
+    const list = getCollection(response.data, ["data", "customers"]);
+
+    setCustomers(list);
+
+    const preferredCustomer =
+      list.find((customer) => customer.id === customerIdToSelect) ||
+      list.find((customer) => customer.id === selectedCustomerId) ||
+      list.find((customer) => customer.customerNumber === 1) ||
+      list[0] ||
+      DEFAULT_CUSTOMER;
+
+    setSelectedCustomerId(preferredCustomer.id);
+    setSelectedCustomerDetails(preferredCustomer);
+
+    return list;
+  };
+
+  useEffect(() => {
+    let isMounted = true;
+
+    async function loadCustomers() {
+      try {
+        setIsLoadingCustomers(true);
+        setCustomerNotice({ type: "", message: "" });
+
+        const response = await api.get("/customers");
+        const list = getCollection(response.data, ["data", "customers"]);
+
+        if (!isMounted) {
+          return;
+        }
+
+        setCustomers(list);
+
+        const preferredCustomer =
+          list.find((customer) => customer.customerNumber === 1) ||
+          list[0] ||
+          DEFAULT_CUSTOMER;
+
+        setSelectedCustomerId(preferredCustomer.id);
+        setSelectedCustomerDetails(preferredCustomer);
+      } catch (error) {
+        if (isMounted) {
+          setCustomers([DEFAULT_CUSTOMER]);
+          setSelectedCustomerId(DEFAULT_CUSTOMER.id);
+          setSelectedCustomerDetails(DEFAULT_CUSTOMER);
+          setCustomerNotice({
+            type: "warning",
+            message:
+              error.response?.data?.message ||
+              "Impossible de charger les clients. Client inconnu reste selectionne par defaut.",
+          });
+        }
+      } finally {
+        if (isMounted) {
+          setIsLoadingCustomers(false);
+        }
+      }
+    }
+
+    loadCustomers();
+
+    return () => {
+      isMounted = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!selectedCustomerId) {
+      return undefined;
+    }
+
+    let isMounted = true;
+
+    async function loadCustomerCredit() {
+      try {
+        setIsLoadingCustomerCredit(true);
+        const response = await api.get(`/customers/${selectedCustomerId}/credit`);
+
+        if (isMounted) {
+          setSelectedCustomerDetails((current) => ({
+            ...(customers.find((customer) => customer.id === selectedCustomerId) ||
+              current ||
+              DEFAULT_CUSTOMER),
+            customerNumber: response.data?.customerNumber ?? current.customerNumber,
+            name: response.data?.name ?? current.name,
+            credit: response.data?.credit ?? 0,
+          }));
+        }
+      } catch (error) {
+        if (isMounted) {
+          setSelectedCustomerDetails((current) =>
+            customers.find((customer) => customer.id === selectedCustomerId) ||
+            current ||
+            DEFAULT_CUSTOMER
+          );
+        }
+      } finally {
+        if (isMounted) {
+          setIsLoadingCustomerCredit(false);
+        }
+      }
+    }
+
+    loadCustomerCredit();
+
+    return () => {
+      isMounted = false;
+    };
+  }, [customers, selectedCustomerId]);
+
   const refreshProducts = async () => {
     try {
       const response = await api.get("/products");
-      setProducts(response.data?.data || []);
+      setProducts(Array.isArray(response.data) ? response.data : response.data?.data || []);
     } catch (error) {
       // Keep the cashier flow stable even if the background refresh fails.
     }
+  };
+
+  const ensureStoreSelected = () => {
+    if (activeStoreId) {
+      return true;
+    }
+
+    setNotice({
+      type: "warning",
+      message: isAdmin
+        ? "Selectionnez d'abord un point de vente pour verifier le stock."
+        : "Aucun point de vente actif n'est assigne a cet utilisateur.",
+    });
+    return false;
   };
 
   const addProductWithStockCheck = (product) => {
@@ -101,6 +412,7 @@ function PosPage() {
     addItem({
       ...product,
       price: product.price ?? product.salePrice ?? 0,
+      storeName: activeStoreName || product.storeName || null,
     });
     setNotice({
       type: "success",
@@ -118,6 +430,10 @@ function PosPage() {
         type: "error",
         message: "Veuillez entrer ou scanner un code-barres.",
       });
+      return;
+    }
+
+    if (!ensureStoreSelected()) {
       return;
     }
 
@@ -164,10 +480,24 @@ function PosPage() {
       return;
     }
 
+    if (!activeStoreId || !activeCashRegisterId) {
+      setNotice({
+        type: "warning",
+        message: isAdmin
+          ? "Selectionnez un point de vente et une caisse avant de valider la vente."
+          : "Votre compte doit etre assigne a un point de vente et une caisse.",
+      });
+      return;
+    }
+
     setIsPaymentOpen(true);
   };
 
   const handleQuickAdd = async (product) => {
+    if (!ensureStoreSelected()) {
+      return;
+    }
+
     try {
       setIsSearchingBarcode(true);
 
@@ -217,9 +547,21 @@ function PosPage() {
       return;
     }
 
+    if (!activeStoreId || !activeCashRegisterId) {
+      setIsPaymentOpen(false);
+      setNotice({
+        type: "error",
+        message:
+          "Un point de vente actif et une caisse active sont obligatoires pour creer une vente.",
+      });
+      return;
+    }
+
     const salePayload = {
       storeId: activeStoreId,
+      cashRegisterId: activeCashRegisterId,
       userId,
+      customerId: selectedCustomer?.id || DEFAULT_CUSTOMER.id,
       paymentMethod: method,
       items: items.map((item) => ({
         productId: item.id,
@@ -266,6 +608,74 @@ function PosPage() {
     }
   };
 
+  const handleCustomerSelection = (value) => {
+    const nextCustomerId = Number(value) || DEFAULT_CUSTOMER.id;
+    const nextCustomer =
+      customers.find((customer) => customer.id === nextCustomerId) ||
+      DEFAULT_CUSTOMER;
+
+    setCustomerNotice({ type: "", message: "" });
+    setSelectedCustomerId(nextCustomer.id);
+    setSelectedCustomerDetails(nextCustomer);
+  };
+
+  const closeCustomerModal = () => {
+    if (isSubmittingCustomer) {
+      return;
+    }
+
+    setIsCustomerModalOpen(false);
+    setCustomerModalError("");
+    setNewCustomerForm({
+      name: "",
+      phone: "",
+      email: "",
+    });
+  };
+
+  const handleCreateCustomer = async (event) => {
+    event.preventDefault();
+
+    if (!newCustomerForm.name.trim()) {
+      setCustomerModalError("Le nom client est obligatoire.");
+      return;
+    }
+
+    try {
+      setIsSubmittingCustomer(true);
+      setCustomerModalError("");
+
+      const response = await api.post("/customers", {
+        name: newCustomerForm.name.trim(),
+        phone: newCustomerForm.phone.trim(),
+        email: newCustomerForm.email.trim(),
+      });
+      const createdCustomer = response.data?.data || response.data;
+
+      await fetchCustomers(createdCustomer?.id);
+      setIsCustomerModalOpen(false);
+      setCustomerModalError("");
+      setNewCustomerForm({
+        name: "",
+        phone: "",
+        email: "",
+      });
+      setCustomerNotice({
+        type: "success",
+        message: `Client ajoute avec succes. Numero client: #${
+          createdCustomer?.customerNumber || "?"
+        }.`,
+      });
+    } catch (error) {
+      setCustomerModalError(
+        error.response?.data?.message ||
+          "Impossible d'ajouter ce client pour le moment."
+      );
+    } finally {
+      setIsSubmittingCustomer(false);
+    }
+  };
+
   return (
     <div>
       <PageHeader
@@ -273,6 +683,167 @@ function PosPage() {
         title="POS / Caisse"
         description="Scanner les produits, ajuster les quantites et finaliser l'encaissement en quelques clics."
       />
+
+      <SectionCard
+        title="Caisse active"
+        description="Le contexte de vente actuel est applique a chaque ticket."
+      >
+        <div className="register-context-grid">
+          <div className="detail-stat">
+            <span>Store</span>
+            <strong>{activeStoreName || "Selection requise"}</strong>
+          </div>
+          <div className="detail-stat">
+            <span>Cash register</span>
+            <strong>{activeCashRegisterName || "Selection requise"}</strong>
+          </div>
+          <div className="detail-stat">
+            <span>Cashier</span>
+            <strong>{currentUser?.name || "Utilisateur inconnu"}</strong>
+          </div>
+        </div>
+
+        {isAdmin ? (
+          <div className="register-selector-grid">
+            <div className="field-group compact-field">
+              <label className="field-label" htmlFor="pos-store-select">
+                Store
+              </label>
+              <select
+                id="pos-store-select"
+                className="text-input select-input"
+                value={selectedStoreId || ""}
+                onChange={(event) => {
+                  const nextStoreId = Number(event.target.value) || null;
+                  setSelectedStoreId(nextStoreId);
+                  setSelectedCashRegisterId(null);
+                }}
+                disabled={isLoadingStores}
+              >
+                <option value="">Selectionner un point de vente</option>
+                {stores.map((store) => (
+                  <option key={store.id} value={store.id}>
+                    {store.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div className="field-group compact-field">
+              <label className="field-label" htmlFor="pos-cash-register-select">
+                Cash Register
+              </label>
+              <select
+                id="pos-cash-register-select"
+                className="text-input select-input"
+                value={selectedCashRegisterId || ""}
+                onChange={(event) =>
+                  setSelectedCashRegisterId(Number(event.target.value) || null)
+                }
+                disabled={!selectedStoreId || isLoadingCashRegisters}
+              >
+                <option value="">
+                  {selectedStoreId
+                    ? "Selectionner une caisse"
+                    : "Choisir d'abord un point de vente"}
+                </option>
+                {cashRegisters.map((cashRegister) => (
+                  <option key={cashRegister.id} value={cashRegister.id}>
+                    {cashRegister.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+        ) : null}
+      </SectionCard>
+
+      <SectionCard
+        title="Client"
+        description="Selectionnez le client avant de scanner ou d'ajouter les produits."
+        actions={
+          <button
+            className="ghost-button"
+            type="button"
+            onClick={() => {
+              setCustomerModalError("");
+              setIsCustomerModalOpen(true);
+            }}
+          >
+            Ajouter client
+          </button>
+        }
+      >
+        {customerNotice.message ? (
+          <div className={`inline-notice ${customerNotice.type}`}>
+            {customerNotice.message}
+          </div>
+        ) : null}
+
+        <div className="register-selector-grid customer-selector-grid">
+          <div className="field-group compact-field">
+            <label className="field-label" htmlFor="customer-search">
+              Recherche client
+            </label>
+            <input
+              id="customer-search"
+              className="text-input"
+              type="text"
+              placeholder="Rechercher par nom ou numero client"
+              value={customerSearchTerm}
+              onChange={(event) => setCustomerSearchTerm(event.target.value)}
+            />
+          </div>
+
+          <div className="field-group compact-field">
+            <label className="field-label" htmlFor="customer-select">
+              Client selectionne
+            </label>
+            <select
+              id="customer-select"
+              className="text-input select-input"
+              value={selectedCustomer?.id || DEFAULT_CUSTOMER.id}
+              onChange={(event) => handleCustomerSelection(event.target.value)}
+              disabled={isLoadingCustomers}
+            >
+              {selectableCustomers.map((customer) => (
+                <option key={customer.id} value={customer.id}>
+                  #{customer.customerNumber} - {customer.name}
+                </option>
+              ))}
+            </select>
+          </div>
+        </div>
+
+        <div className="register-context-grid customer-context-grid">
+          <div className="detail-stat">
+            <span>Numero client</span>
+            <strong>#{selectedCustomer?.customerNumber || 1}</strong>
+          </div>
+          <div className="detail-stat">
+            <span>Nom client</span>
+            <strong>{selectedCustomer?.name || DEFAULT_CUSTOMER.name}</strong>
+          </div>
+          <div className="detail-stat">
+            <span>Credit client</span>
+            <strong>
+              {isLoadingCustomerCredit
+                ? "Chargement..."
+                : formatCurrencyDh(customerCredit || 0)}
+            </strong>
+          </div>
+        </div>
+
+        <div className="customer-credit-row">
+          {Number(customerCredit) > 0 ? (
+            <span className="app-badge tone-stock-warning">
+              Credit client: {formatCurrencyDh(customerCredit)}
+            </span>
+          ) : (
+            <span className="app-badge tone-success">Aucun credit</span>
+          )}
+        </div>
+      </SectionCard>
 
       <div className="pos-layout">
         <SectionCard
@@ -350,7 +921,7 @@ function PosPage() {
                 <div className="cart-item" key={item.id}>
                   <div className="cart-item-main">
                     <strong>{item.name}</strong>
-                    <span>{item.storeName || item.store || "Magasin courant"}</span>
+                    <span>{item.storeName || activeStoreName || "Magasin courant"}</span>
                   </div>
 
                   <div className="cart-quantity-controls">
@@ -445,6 +1016,97 @@ function PosPage() {
         onConfirm={handleConfirmPayment}
         isProcessing={isSubmittingSale}
       />
+
+      <Modal
+        isOpen={isCustomerModalOpen}
+        eyebrow="Nouveau client"
+        title="Ajouter un client"
+        description="Les clients connus recoivent automatiquement le prochain numero client disponible."
+        onClose={closeCustomerModal}
+        actions={
+          <>
+            <button
+              className="ghost-button"
+              type="button"
+              onClick={closeCustomerModal}
+              disabled={isSubmittingCustomer}
+            >
+              Annuler
+            </button>
+            <button
+              className="primary-button"
+              type="submit"
+              form="create-customer-form"
+              disabled={isSubmittingCustomer}
+            >
+              {isSubmittingCustomer ? "Ajout..." : "Ajouter client"}
+            </button>
+          </>
+        }
+      >
+        <form className="form-grid" id="create-customer-form" onSubmit={handleCreateCustomer}>
+          {customerModalError ? (
+            <div className="inline-notice error">{customerModalError}</div>
+          ) : null}
+
+          <div className="field-group">
+            <label className="field-label" htmlFor="customer-name">
+              Nom client
+            </label>
+            <input
+              id="customer-name"
+              className="text-input"
+              type="text"
+              value={newCustomerForm.name}
+              onChange={(event) => {
+                setCustomerModalError("");
+                setNewCustomerForm((current) => ({
+                  ...current,
+                  name: event.target.value,
+                }));
+              }}
+            />
+          </div>
+
+          <div className="field-group">
+            <label className="field-label" htmlFor="customer-phone">
+              Telephone
+            </label>
+            <input
+              id="customer-phone"
+              className="text-input"
+              type="text"
+              value={newCustomerForm.phone}
+              onChange={(event) => {
+                setCustomerModalError("");
+                setNewCustomerForm((current) => ({
+                  ...current,
+                  phone: event.target.value,
+                }));
+              }}
+            />
+          </div>
+
+          <div className="field-group">
+            <label className="field-label" htmlFor="customer-email">
+              Email
+            </label>
+            <input
+              id="customer-email"
+              className="text-input"
+              type="email"
+              value={newCustomerForm.email}
+              onChange={(event) => {
+                setCustomerModalError("");
+                setNewCustomerForm((current) => ({
+                  ...current,
+                  email: event.target.value,
+                }));
+              }}
+            />
+          </div>
+        </form>
+      </Modal>
     </div>
   );
 }

@@ -13,6 +13,43 @@ function buildDisplayName(email) {
     .join(" ");
 }
 
+function normalizeRole(role) {
+  const normalizedRole = String(role || "").trim().toLowerCase();
+
+  if (normalizedRole === "admin") {
+    return "admin";
+  }
+
+  if (["employee", "employe"].includes(normalizedRole)) {
+    return "employe";
+  }
+
+  return normalizedRole || "employe";
+}
+
+function normalizeUser(user) {
+  const email = user.email?.trim().toLowerCase() || "";
+  const name = user.name || user.nom || buildDisplayName(email || "team member");
+  const storeId =
+    user.storeId ?? user.pointDeVenteId ?? user.pointDeVente?.id ?? null;
+  const storeName =
+    user.storeName ?? user.pointDeVente?.nom ?? user.store?.name ?? null;
+  const cashRegisterId = user.cashRegisterId ?? user.caisseId ?? user.caisse?.id ?? null;
+  const cashRegisterName =
+    user.cashRegisterName ?? user.caisse?.nom ?? user.cashRegister?.name ?? null;
+
+  return {
+    ...user,
+    email,
+    name,
+    role: normalizeRole(user.role),
+    storeId,
+    storeName,
+    cashRegisterId,
+    cashRegisterName,
+  };
+}
+
 function readAuthState() {
   try {
     const storedValue = localStorage.getItem(AUTH_STORAGE_KEY);
@@ -34,11 +71,7 @@ function readAuthState() {
 }
 
 export function saveAuthSession(token, user) {
-  const normalizedUser = {
-    ...user,
-    email: user.email?.trim().toLowerCase() || "",
-    name: user.name || buildDisplayName(user.email || "team member"),
-  };
+  const normalizedUser = normalizeUser(user);
   const authState = {
     token,
     user: normalizedUser,
@@ -51,7 +84,8 @@ export function saveAuthSession(token, user) {
 }
 
 export function getCurrentUser() {
-  return readAuthState()?.user || null;
+  const user = readAuthState()?.user;
+  return user ? normalizeUser(user) : null;
 }
 
 export function getAuthToken() {

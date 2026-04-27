@@ -30,9 +30,23 @@ const pointDeVenteInclude = {
       updatedAt: true,
     },
   },
+  caisses: {
+    select: {
+      id: true,
+      nom: true,
+      code: true,
+      estActive: true,
+      createdAt: true,
+      updatedAt: true,
+    },
+    orderBy: {
+      id: "asc",
+    },
+  },
   _count: {
     select: {
       utilisateurs: true,
+      caisses: true,
       stocks: true,
       ventes: true,
     },
@@ -199,6 +213,7 @@ const deletePointDeVente = async (req, res) => {
         _count: {
           select: {
             utilisateurs: true,
+            caisses: true,
             stocks: true,
             ventes: true,
           },
@@ -214,12 +229,13 @@ const deletePointDeVente = async (req, res) => {
 
     if (
       existingPointDeVente._count.utilisateurs > 0 ||
+      existingPointDeVente._count.caisses > 0 ||
       existingPointDeVente._count.stocks > 0 ||
       existingPointDeVente._count.ventes > 0
     ) {
       return res.status(409).json({
         message:
-          "Impossible de supprimer ce point de vente car il est lie a des utilisateurs, stocks ou ventes.",
+          "Impossible de supprimer ce point de vente car il est lie a des utilisateurs, caisses, stocks ou ventes.",
       });
     }
 

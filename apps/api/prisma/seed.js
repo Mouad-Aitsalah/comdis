@@ -1,6 +1,6 @@
 require("dotenv").config();
 
-const bcrypt = require("bcrypt");
+const bcrypt = require("bcryptjs");
 const { PrismaClient } = require("@prisma/client");
 
 const prisma = new PrismaClient();
@@ -48,6 +48,72 @@ async function upsertStockEntry(data) {
   });
 }
 
+async function upsertCaisse(data) {
+  return prisma.caisse.upsert({
+    where: {
+      code: data.code,
+    },
+    update: data,
+    create: data,
+  });
+}
+
+async function upsertClient(data) {
+  return prisma.client.upsert({
+    where: {
+      numeroClient: data.numeroClient,
+    },
+    update: data,
+    create: data,
+  });
+}
+
+async function ensureDefaultCustomerSlot() {
+  const customerAtReservedNumber = await prisma.client.findUnique({
+    where: {
+      numeroClient: 1,
+    },
+  });
+
+  if (!customerAtReservedNumber) {
+    return null;
+  }
+
+  const isDefaultCustomer =
+    customerAtReservedNumber.nom === "Client inconnu" &&
+    customerAtReservedNumber.telephone === null &&
+    customerAtReservedNumber.email === null;
+
+  if (isDefaultCustomer) {
+    return customerAtReservedNumber;
+  }
+
+  const lastRealCustomer = await prisma.client.findFirst({
+    where: {
+      numeroClient: {
+        gt: 1,
+      },
+    },
+    orderBy: {
+      numeroClient: "desc",
+    },
+    select: {
+      numeroClient: true,
+    },
+  });
+
+  const nextNumeroClient = (lastRealCustomer?.numeroClient || 1) + 1;
+
+  return prisma.client.update({
+    where: {
+      id: customerAtReservedNumber.id,
+    },
+    data: {
+      numeroClient: nextNumeroClient,
+    },
+  });
+}
+
 async function main() {
   console.log("Starting seed...");
 
@@ -81,7 +147,39 @@ async function main() {
     pointsDeVente.push(pointDeVente);
   }
 
+  const caissesParPointDeVente = [
+    [
+      { nom: "Caisse 1", code: "STORE1-CAISSE1" },
+      { nom: "Caisse 2", code: "STORE1-CAISSE2" },
+    ],
+    [
+      { nom: "Caisse 1", code: "STORE2-CAISSE1" },
+      { nom: "Caisse 2", code: "STORE2-CAISSE2" },
+    ],
+    [{ nom: "Caisse 1", code: "STORE3-CAISSE1" }],
+    [{ nom: "Caisse 1", code: "STORE4-CAISSE1" }],
+  ];
+
+  const caisses = [];
+
+  for (const [index, pointDeVente] of pointsDeVente.entries()) {
+    const caissesDuPointDeVente = [];
+
+    for (const caisseData of caissesParPointDeVente[index]) {
+      const caisse = await upsertCaisse({
+        ...caisseData,
+        pointDeVenteId: pointDeVente.id,
+        estActive: true,
+      });
+
+      caissesDuPointDeVente.push(caisse);
+    }
+
+    caisses.push(caissesDuPointDeVente);
+  }
+
   const adminPasswordHash = await bcrypt.hash("Admin12345", 10);
+  const employeePasswordHash = await bcrypt.hash("Caisse12345", 10);
 
   const adminUser = await prisma.utilisateur.upsert({
     where: { email: "admin@comdis.local" },
@@ -91,6 +189,7 @@ async function main() {
       role: "ADMIN",
       estActif: true,
       pointDeVenteId: null,
+      caisseId: null,
     },
     create: {
       nom: "Administrateur Principal",
@@ -99,7 +198,81 @@ async function main() {
       role: "ADMIN",
       estActif: true,
       pointDeVenteId: null,
+      caisseId: null,
     },
+  });
+
+  const employes = [
+    {
+      nom: "Employe Caisse 1",
+      email: "caisse1@comdis.local",
+      pointDeVenteId: pointsDeVente[0].id,
+      caisseId: caisses[0][0].id,
+    },
+    {
+      nom: "Employe Caisse 2",
+      email: "caisse2@comdis.local",
+      pointDeVenteId: pointsDeVente[0].id,
+      caisseId: caisses[0][1].id,
+    },
+    {
+      nom: "Employe Caisse 3",
+      email: "caisse3@comdis.local",
+      pointDeVenteId: pointsDeVente[1].id,
+      caisseId: caisses[1][0].id,
+    },
+    {
+      nom: "Employe Caisse 4",
+      email: "caisse4@comdis.local",
+      pointDeVenteId: pointsDeVente[1].id,
+      caisseId: caisses[1][1].id,
+    },
+    {
+      nom: "Employe Caisse 5",
+      email: "caisse5@comdis.local",
+      pointDeVenteId: pointsDeVente[2].id,
+      caisseId: caisses[2][0].id,
+    },
+    {
+      nom: "Employe Caisse 6",
+      email: "caisse6@comdis.local",
+      pointDeVenteId: pointsDeVente[3].id,
+      caisseId: caisses[3][0].id,
+    },
+  ];
+
+  for (const employe of employes) {
+    await prisma.utilisateur.upsert({
+      where: { email: employe.email },
+      update: {
+        nom: employe.nom,
+        motDePasse: employeePasswordHash,
+        role: "EMPLOYE",
+        estActif: true,
+        pointDeVenteId: employe.pointDeVenteId,
+        caisseId: employe.caisseId,
+      },
+      create: {
+        nom: employe.nom,
+        email: employe.email,
+        motDePasse: employeePasswordHash,
+        role: "EMPLOYE",
+        estActif: true,
+        pointDeVenteId: employe.pointDeVenteId,
+        caisseId: employe.caisseId,
+      },
+    });
+  }
+
+  await ensureDefaultCustomerSlot();
+
+  const clientInconnu = await upsertClient({
+    numeroClient: 1,
+    nom: "Client inconnu",
+    telephone: null,
+    email: null,
+    credit: 0,
+    estActif: true,
   });
 
   const fournisseurBoissons = await prisma.fournisseur.upsert({
@@ -264,9 +437,21 @@ async function main() {
     await upsertStockEntry(stockEntry);
   }
 
+  await prisma.vente.updateMany({
+    where: {
+      clientId: null,
+    },
+    data: {
+      clientId: clientInconnu.id,
+    },
+  });
+
   console.log("Seed completed successfully.");
   console.log(`Admin email: ${adminUser.email}`);
   console.log("Admin password: Admin12345");
+  console.log("Employee test email: caisse1@comdis.local");
+  console.log("Employee test password: Caisse12345");
+  console.log("Default customer: #1 Client inconnu");
 }
 
 main()

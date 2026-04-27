@@ -2,14 +2,14 @@ import { useEffect, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import api from "../services/api";
 import { ROUTE_PATHS } from "../routes/paths";
-import { isAuthenticated, saveAuthSession } from "../store/authStore";
+import { getCurrentUser, isAuthenticated, saveAuthSession } from "../store/authStore";
 
 function LoginPage() {
   const navigate = useNavigate();
   const location = useLocation();
   const [formData, setFormData] = useState({
-    email: "admin@multipos.com",
-    password: "123456",
+    email: "admin@comdis.local",
+    password: "Admin12345",
   });
   const [isLoading, setIsLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState("");
@@ -17,7 +17,10 @@ function LoginPage() {
 
   useEffect(() => {
     if (isAuthenticated()) {
-      navigate(redirectPath, { replace: true });
+      const currentUser = getCurrentUser();
+      const nextPath =
+        currentUser?.role === "admin" ? redirectPath : ROUTE_PATHS.POS;
+      navigate(nextPath, { replace: true });
     }
   }, [navigate, redirectPath]);
 
@@ -42,9 +45,11 @@ function LoginPage() {
         password: formData.password,
       });
       const { token, user } = response.data;
+      const nextPath =
+        user?.role === "admin" ? redirectPath : ROUTE_PATHS.POS;
 
       saveAuthSession(token, user);
-      navigate(redirectPath, { replace: true });
+      navigate(nextPath, { replace: true });
     } catch (error) {
       setErrorMessage(
         error.response?.data?.message ||
@@ -107,7 +112,7 @@ function LoginPage() {
                 className="text-input"
                 type="email"
                 name="email"
-                placeholder="admin@multipos.com"
+                placeholder="admin@comdis.local"
                 value={formData.email}
                 onChange={handleChange}
                 required
@@ -141,7 +146,7 @@ function LoginPage() {
 
           <div className="login-footer-note">
             <span>Admin demo:</span>
-            <strong>admin@multipos.com</strong>
+            <strong>admin@comdis.local</strong>
           </div>
         </div>
       </div>
