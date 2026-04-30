@@ -8,8 +8,8 @@ function LoginPage() {
   const navigate = useNavigate();
   const location = useLocation();
   const [formData, setFormData] = useState({
-    email: "admin@comdis.local",
-    password: "Admin12345",
+    email: "",
+    password: "",
   });
   const [isLoading, setIsLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState("");
