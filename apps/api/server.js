@@ -49,6 +49,7 @@ app.listen(PORT, () => {
 app.get('/health', (req, res) => {
   res.status(200).json({ status: 'OK', message: 'Server is alive' });
 });
+  
 app.get("/seed", async (req, res) => {
   try {
     const { exec } = require("child_process");
