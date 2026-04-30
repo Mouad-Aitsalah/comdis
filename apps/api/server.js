@@ -39,7 +39,9 @@ app.get("/", authMiddleware, (req, res) => {
 });
 
 
-
+app.get('/health', (req, res) => {
+  res.status(200).json({ status: 'OK', message: 'Server is alive' });
+});
 app.use(notFoundMiddleware);
 app.use(errorHandlerMiddleware);
 
