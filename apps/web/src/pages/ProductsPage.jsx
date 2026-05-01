@@ -7,6 +7,7 @@ import SectionCard from "../components/SectionCard";
 import SearchInput from "../components/SearchInput";
 import api from "../services/api";
 import { getCurrentUser } from "../store/authStore";
+import { cleanupLegacyStoreCache, getStoresCollection } from "../utils/storeAccess";
 import { formatCurrencyDh } from "../utils/formatters";
 
 const getCollection = (payload, keys = []) => {
@@ -302,7 +303,7 @@ function ProductsPage() {
   const fetchStores = async () => {
     try {
       const response = await api.get("/stores");
-      const storesList = getCollection(response.data, ["data", "stores"]);
+      const storesList = getStoresCollection(response.data);
       setStores(storesList);
       setStoresError("");
       return storesList;
@@ -320,6 +321,7 @@ function ProductsPage() {
     let isMounted = true;
 
     async function loadPageData() {
+      cleanupLegacyStoreCache();
       setIsLoading(true);
       setIsLoadingSuppliers(true);
       setIsLoadingStores(true);
@@ -366,7 +368,7 @@ function ProductsPage() {
         setStores([]);
         setStoresError("");
       } else if (storesResult?.status === "fulfilled") {
-        const storesList = getCollection(storesResult.value.data, ["data", "stores"]);
+        const storesList = getStoresCollection(storesResult.value.data);
         setStores(storesList);
         setStoresError("");
       } else {

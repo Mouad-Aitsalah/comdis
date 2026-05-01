@@ -10,6 +10,7 @@ import StoreBarChart from "../components/charts/StoreBarChart";
 import TopProductsChart from "../components/charts/TopProductsChart";
 import SectionCard from "../components/SectionCard";
 import StatCard from "../components/StatCard";
+import { cleanupLegacyStoreCache, getStoresCollection } from "../utils/storeAccess";
 import { formatCurrencyDh } from "../utils/formatters";
 
 const periodOptions = [
@@ -22,6 +23,7 @@ const emptySalesMessage = "Pas encore de donnees de vente pour cette periode.";
 function DashboardPage() {
   const [period, setPeriod] = useState("week");
   const [analytics, setAnalytics] = useState(null);
+  const [stores, setStores] = useState([]);
   const [alerts, setAlerts] = useState([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isAlertsModalOpen, setIsAlertsModalOpen] = useState(false);
@@ -32,23 +34,27 @@ function DashboardPage() {
 
     async function fetchDashboardData() {
       try {
+        cleanupLegacyStoreCache();
         setIsLoading(true);
         setErrorMessage("");
 
-        const [analyticsResponse, alertsResponse] = await Promise.all([
+        const [analyticsResponse, alertsResponse, storesResponse] = await Promise.all([
           api.get("/analytics", {
             params: { period },
           }),
           api.get("/stocks/alerts"),
+          api.get("/stores"),
         ]);
 
         if (isMounted) {
           setAnalytics(analyticsResponse.data || null);
           setAlerts(Array.isArray(alertsResponse.data) ? alertsResponse.data : []);
+          setStores(getStoresCollection(storesResponse.data));
         }
       } catch (error) {
         if (isMounted) {
           setAnalytics(null);
+          setStores([]);
           setAlerts([]);
           setErrorMessage(
             error.response?.data?.message ||
@@ -69,9 +75,51 @@ function DashboardPage() {
     };
   }, [period]);
 
+  const scopedStoreNames = useMemo(
+    () => new Set(stores.map((store) => String(store.name || "").trim()).filter(Boolean)),
+    [stores]
+  );
+  const scopedSalesByStore = useMemo(() => {
+    if (!analytics?.salesByStore?.length) {
+      return [];
+    }
+
+    if (!scopedStoreNames.size) {
+      return analytics.salesByStore;
+    }
+
+    return analytics.salesByStore.filter((item) =>
+      scopedStoreNames.has(String(item.store || "").trim())
+    );
+  }, [analytics, scopedStoreNames]);
+  const scopedAlerts = useMemo(() => {
+    if (!alerts.length) {
+      return [];
+    }
+
+    if (!stores.length) {
+      return alerts;
+    }
+
+    const scopedStoreIds = new Set(stores.map((store) => Number(store.id)));
+
+    return alerts.filter((item) => scopedStoreIds.has(Number(item.magasinId)));
+  }, [alerts, stores]);
+  const resolvedBestStore = useMemo(() => {
+    if (!analytics?.bestStore?.name) {
+      return null;
+    }
+
+    if (!scopedStoreNames.size || scopedStoreNames.has(String(analytics.bestStore.name).trim())) {
+      return analytics.bestStore;
+    }
+
+    return null;
+  }, [analytics, scopedStoreNames]);
+
   const hasSales = Boolean(analytics?.hasSales);
-  const lowStockCount = alerts.length;
-  const criticalStockCount = alerts.filter(
+  const lowStockCount = scopedAlerts.length;
+  const criticalStockCount = scopedAlerts.filter(
     (alert) => alert.severity === "critical"
   ).length;
   const warningStockCount = lowStockCount - criticalStockCount;
@@ -107,14 +155,14 @@ function DashboardPage() {
         label: "Meilleur magasin",
         value: isLoading
           ? "Chargement..."
-          : analytics?.bestStore?.name || "Aucune donnee",
-        detail: analytics?.bestStore
-          ? `${formatCurrencyDh(analytics.bestStore.revenue || 0)} sur la periode.`
+          : resolvedBestStore?.name || "Aucune donnee",
+        detail: resolvedBestStore
+          ? `${formatCurrencyDh(resolvedBestStore.revenue || 0)} sur la periode.`
           : "Aucune vente valide enregistree pour cette periode.",
         tone: "warning",
       },
     ],
-    [analytics, isLoading, period]
+    [analytics, isLoading, period, resolvedBestStore]
   );
 
   return (
@@ -237,7 +285,7 @@ function DashboardPage() {
           className="analytics-card"
         >
           <StoreBarChart
-            data={analytics?.salesByStore || []}
+            data={scopedSalesByStore}
             loading={isLoading}
             emptyTitle="Aucune comparaison disponible"
             emptyDescription={emptySalesMessage}
@@ -312,7 +360,7 @@ function DashboardPage() {
               { key: "minimumThreshold", label: "Seuil minimum" },
               { key: "status", label: "Statut" },
             ]}
-            data={alerts}
+            data={scopedAlerts}
             emptyTitle={isLoading ? "Chargement..." : "Aucune alerte active"}
             emptyDescription={
               isLoading

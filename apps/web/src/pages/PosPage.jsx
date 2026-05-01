@@ -7,6 +7,7 @@ import api from "../services/api";
 import { savePendingSale } from "../services/offlineDb";
 import { getCurrentUser } from "../store/authStore";
 import { useCart } from "../store/cartStore";
+import { cleanupLegacyStoreCache, normalizeStores } from "../utils/storeAccess";
 import { formatCurrencyDh } from "../utils/formatters";
 
 const DEFAULT_CUSTOMER = {
@@ -88,9 +89,10 @@ function PosPage() {
   const activeCashRegisterId = isAdmin
     ? selectedCashRegisterId
     : currentUser?.cashRegisterId;
-  const activeStoreName = isAdmin
-    ? stores.find((store) => store.id === selectedStoreId)?.name || null
-    : currentUser?.storeName;
+  const activeStoreName =
+    stores.find((store) => store.id === activeStoreId)?.name ||
+    currentUser?.storeName ||
+    null;
   const activeCashRegisterName = isAdmin
     ? cashRegisters.find((cashRegister) => cashRegister.id === selectedCashRegisterId)
         ?.name || null
@@ -123,6 +125,10 @@ function PosPage() {
   const selectableCustomers = filteredCustomers.length
     ? filteredCustomers
     : [selectedCustomer];
+
+  useEffect(() => {
+    cleanupLegacyStoreCache();
+  }, []);
 
   useEffect(() => {
     const handleOnline = () => {
@@ -192,25 +198,30 @@ function PosPage() {
   }, []);
 
   useEffect(() => {
-    if (!isAdmin) {
-      return undefined;
-    }
-
     let isMounted = true;
 
     async function fetchStores() {
       try {
         setIsLoadingStores(true);
         const response = await api.get("/stores");
-        const list = Array.isArray(response.data)
-          ? response.data
-          : response.data?.data || [];
+        const list = normalizeStores(response.data);
 
         if (isMounted) {
           setStores(list);
+          setSelectedStoreId((currentValue) => {
+            if (!isAdmin) {
+              return currentValue;
+            }
+
+            return list.some((store) => store.id === currentValue) ? currentValue : null;
+          });
         }
       } catch (error) {
         if (isMounted) {
+          setStores([]);
+          setCashRegisters([]);
+          setSelectedStoreId(null);
+          setSelectedCashRegisterId(null);
           setNotice({
             type: "warning",
             message:

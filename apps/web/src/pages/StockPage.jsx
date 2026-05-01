@@ -7,6 +7,7 @@ import PageHeader from "../components/PageHeader";
 import SearchInput from "../components/SearchInput";
 import SectionCard from "../components/SectionCard";
 import { getCurrentUser } from "../store/authStore";
+import { cleanupLegacyStoreCache, getStoresCollection } from "../utils/storeAccess";
 
 const createInitialModalState = () => ({
   isOpen: false,
@@ -26,6 +27,7 @@ function StockPage() {
   const [searchTerm, setSearchTerm] = useState("");
   const [selectedStore, setSelectedStore] = useState("Tous");
   const [stocks, setStocks] = useState([]);
+  const [stores, setStores] = useState([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [errorMessage, setErrorMessage] = useState("");
@@ -46,18 +48,26 @@ function StockPage() {
 
     async function loadStocks() {
       try {
+        cleanupLegacyStoreCache();
         setIsLoading(true);
         setErrorMessage("");
 
-        const response = await api.get("/stocks");
+        const [stocksResponse, storesResponse] = await Promise.all([
+          api.get("/stocks"),
+          api.get("/stores"),
+        ]);
 
         if (isMounted) {
           setStocks(
-            Array.isArray(response.data) ? response.data : response.data?.data || []
+            Array.isArray(stocksResponse.data)
+              ? stocksResponse.data
+              : stocksResponse.data?.data || []
           );
+          setStores(getStoresCollection(storesResponse.data));
         }
       } catch (error) {
         if (isMounted) {
+          setStores([]);
           setErrorMessage(
             error.response?.data?.message ||
               "Impossible de charger le stock pour le moment."
@@ -78,8 +88,8 @@ function StockPage() {
   }, []);
 
   const storeOptions = useMemo(
-    () => [...new Set(stocks.map((item) => item.storeName).filter(Boolean))],
-    [stocks]
+    () => stores.filter((store) => store?.id && store?.name),
+    [stores]
   );
 
   const filteredStocks = useMemo(
@@ -91,7 +101,7 @@ function StockPage() {
           item.productName?.toLowerCase().includes(query) ||
           item.barcode?.toLowerCase().includes(query);
         const matchesStore =
-          selectedStore === "Tous" || item.storeName === selectedStore;
+          selectedStore === "Tous" || String(item.storeId) === String(selectedStore);
 
         return matchesSearch && matchesStore;
       }),
@@ -259,9 +269,9 @@ function StockPage() {
             onChange={(event) => setSelectedStore(event.target.value)}
           >
             <option value="Tous">Tous les magasins</option>
-            {storeOptions.map((storeName) => (
-              <option key={storeName} value={storeName}>
-                {storeName}
+            {storeOptions.map((store) => (
+              <option key={store.id} value={store.id}>
+                {store.name}
               </option>
             ))}
           </select>

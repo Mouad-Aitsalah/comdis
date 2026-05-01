@@ -5,351 +5,192 @@ const { PrismaClient } = require("@prisma/client");
 
 const prisma = new PrismaClient();
 
-const storeNameSuffixes = ["Centre", "Nord", "Sud", "Est"];
-
-const organisationConfigs = [
-  {
-    name: "Manager 1",
-    admin: {
-      nom: "Administrateur Principal",
-      email: "admin@comdis.local",
-      password: "Admin12345",
-    },
-    stores: [
-      {
-        nom: "Point de Vente Centre",
-        adresse: "12 Avenue Hassan II",
-        telephone: "0600000001",
-      },
-      {
-        nom: "Point de Vente Nord",
-        adresse: "25 Rue Atlas",
-        telephone: "0600000002",
-      },
-      {
-        nom: "Point de Vente Sud",
-        adresse: "8 Boulevard Mohammed V",
-        telephone: "0600000003",
-      },
-      {
-        nom: "Point de Vente Est",
-        adresse: "44 Rue Al Amal",
-        telephone: "0600000004",
-      },
-    ],
-    cashRegistersByStore: [
-      [
-        { nom: "Caisse 1", code: "M1-STORE1-CAISSE1" },
-        { nom: "Caisse 2", code: "M1-STORE1-CAISSE2" },
-      ],
-      [
-        { nom: "Caisse 1", code: "M1-STORE2-CAISSE1" },
-        { nom: "Caisse 2", code: "M1-STORE2-CAISSE2" },
-      ],
-      [{ nom: "Caisse 1", code: "M1-STORE3-CAISSE1" }],
-      [{ nom: "Caisse 1", code: "M1-STORE4-CAISSE1" }],
-    ],
-    employees: [
-      {
-        nom: "Employe Caisse 1",
-        email: "caisse1@comdis.local",
-        password: "Caisse12345",
-        storeIndex: 0,
-        cashRegisterIndex: 0,
-      },
-      {
-        nom: "Employe Caisse 2",
-        email: "caisse2@comdis.local",
-        password: "Caisse12345",
-        storeIndex: 0,
-        cashRegisterIndex: 1,
-      },
-      {
-        nom: "Employe Caisse 3",
-        email: "caisse3@comdis.local",
-        password: "Caisse12345",
-        storeIndex: 1,
-        cashRegisterIndex: 0,
-      },
-      {
-        nom: "Employe Caisse 4",
-        email: "caisse4@comdis.local",
-        password: "Caisse12345",
-        storeIndex: 1,
-        cashRegisterIndex: 1,
-      },
-      {
-        nom: "Employe Caisse 5",
-        email: "caisse5@comdis.local",
-        password: "Caisse12345",
-        storeIndex: 2,
-        cashRegisterIndex: 0,
-      },
-      {
-        nom: "Employe Caisse 6",
-        email: "caisse6@comdis.local",
-        password: "Caisse12345",
-        storeIndex: 3,
-        cashRegisterIndex: 0,
-      },
-    ],
-    supplierSeed: [
-      {
-        nom: "Atlas Boissons",
-        email: "contact+manager1-atlas@comdis.local",
-        telephone: "0611111111",
-        adresse: "Casablanca",
-      },
-      {
-        nom: "Marche Epicerie",
-        email: "contact+manager1-epicerie@comdis.local",
-        telephone: "0622222222",
-        adresse: "Rabat",
-      },
-    ],
-    productSeed: [
-      {
-        codeBarres: "6111000001011",
-        nom: "Coca Cola 33cl",
-        categorie: "Boissons",
-        prixAchat: 4.5,
-        prixVente: 6.5,
-        seuilMinimum: 10,
-        supplierIndex: 0,
-      },
-      {
-        codeBarres: "6111000001012",
-        nom: "Eau Minerale 1.5L",
-        categorie: "Boissons",
-        prixAchat: 2.5,
-        prixVente: 4,
-        seuilMinimum: 12,
-        supplierIndex: 0,
-      },
-      {
-        codeBarres: "6111000001013",
-        nom: "Biscuits Chocolat",
-        categorie: "Snacks",
-        prixAchat: 3,
-        prixVente: 5,
-        seuilMinimum: 8,
-        supplierIndex: 1,
-      },
-      {
-        codeBarres: "6111000001014",
-        nom: "Riz 1kg",
-        categorie: "Epicerie",
-        prixAchat: 10,
-        prixVente: 14,
-        seuilMinimum: 6,
-        supplierIndex: 1,
-      },
-      {
-        codeBarres: "6111000001015",
-        nom: "Savon Liquide",
-        categorie: "Hygiene",
-        prixAchat: 12,
-        prixVente: 18,
-        seuilMinimum: 5,
-        supplierIndex: 1,
-      },
-    ],
-    stockSeed: [
-      { productIndex: 0, storeIndex: 0, quantite: 50 },
-      { productIndex: 1, storeIndex: 0, quantite: 80 },
-      { productIndex: 2, storeIndex: 0, quantite: 30 },
-      { productIndex: 3, storeIndex: 1, quantite: 25 },
-      { productIndex: 4, storeIndex: 1, quantite: 20 },
-      { productIndex: 0, storeIndex: 2, quantite: 40 },
-      { productIndex: 2, storeIndex: 2, quantite: 18 },
-      { productIndex: 1, storeIndex: 3, quantite: 60 },
-      { productIndex: 3, storeIndex: 3, quantite: 15 },
-      { productIndex: 4, storeIndex: 3, quantite: 10 },
-    ],
-  },
-  {
-    name: "Manager 2",
-    admin: {
-      nom: "Manager 2",
-      email: "manager2@comdis.local",
-      password: "Manager212345",
-    },
-    stores: storeNameSuffixes.map((suffix, index) => ({
-      nom: `Manager 2 - ${suffix}`,
-      adresse: `${20 + index} Boulevard Manager 2`,
-      telephone: `070000000${index + 1}`,
-    })),
-    cashRegistersByStore: storeNameSuffixes.map((_, index) => [
-      { nom: "Caisse 1", code: `M2-STORE${index + 1}-CAISSE1` },
-    ]),
-    employees: storeNameSuffixes.map((suffix, index) => ({
-      nom: `Employe ${suffix} M2`,
-      email: `m2-caisse${index + 1}@comdis.local`,
-      password: "Caisse12345",
-      storeIndex: index,
-      cashRegisterIndex: 0,
-    })),
-    supplierSeed: [
-      {
-        nom: "Atlas Boissons M2",
-        email: "contact+manager2-atlas@comdis.local",
-        telephone: "0711111111",
-        adresse: "Casablanca",
-      },
-      {
-        nom: "Marche Epicerie M2",
-        email: "contact+manager2-epicerie@comdis.local",
-        telephone: "0722222222",
-        adresse: "Rabat",
-      },
-    ],
-    productSeed: [
-      {
-        codeBarres: "6111000002011",
-        nom: "Coca Cola 33cl",
-        categorie: "Boissons",
-        prixAchat: 4.6,
-        prixVente: 6.8,
-        seuilMinimum: 10,
-        supplierIndex: 0,
-      },
-      {
-        codeBarres: "6111000002012",
-        nom: "Eau Minerale 1.5L",
-        categorie: "Boissons",
-        prixAchat: 2.4,
-        prixVente: 4,
-        seuilMinimum: 12,
-        supplierIndex: 0,
-      },
-      {
-        codeBarres: "6111000002013",
-        nom: "Biscuits Chocolat",
-        categorie: "Snacks",
-        prixAchat: 3.1,
-        prixVente: 5.2,
-        seuilMinimum: 8,
-        supplierIndex: 1,
-      },
-      {
-        codeBarres: "6111000002014",
-        nom: "Riz 1kg",
-        categorie: "Epicerie",
-        prixAchat: 10.2,
-        prixVente: 14.5,
-        seuilMinimum: 6,
-        supplierIndex: 1,
-      },
-      {
-        codeBarres: "6111000002015",
-        nom: "Savon Liquide",
-        categorie: "Hygiene",
-        prixAchat: 12.3,
-        prixVente: 18.4,
-        seuilMinimum: 5,
-        supplierIndex: 1,
-      },
-    ],
-    stockSeed: [
-      { productIndex: 0, storeIndex: 0, quantite: 35 },
-      { productIndex: 1, storeIndex: 0, quantite: 70 },
-      { productIndex: 2, storeIndex: 1, quantite: 22 },
-      { productIndex: 3, storeIndex: 2, quantite: 26 },
-      { productIndex: 4, storeIndex: 3, quantite: 14 },
-    ],
-  },
-  {
-    name: "Manager 3",
-    admin: {
-      nom: "Manager 3",
-      email: "manager3@comdis.local",
-      password: "Manager312345",
-    },
-    stores: storeNameSuffixes.map((suffix, index) => ({
-      nom: `Manager 3 - ${suffix}`,
-      adresse: `${40 + index} Avenue Manager 3`,
-      telephone: `080000000${index + 1}`,
-    })),
-    cashRegistersByStore: storeNameSuffixes.map((_, index) => [
-      { nom: "Caisse 1", code: `M3-STORE${index + 1}-CAISSE1` },
-    ]),
-    employees: storeNameSuffixes.map((suffix, index) => ({
-      nom: `Employe ${suffix} M3`,
-      email: `m3-caisse${index + 1}@comdis.local`,
-      password: "Caisse12345",
-      storeIndex: index,
-      cashRegisterIndex: 0,
-    })),
-    supplierSeed: [
-      {
-        nom: "Atlas Boissons M3",
-        email: "contact+manager3-atlas@comdis.local",
-        telephone: "0811111111",
-        adresse: "Casablanca",
-      },
-      {
-        nom: "Marche Epicerie M3",
-        email: "contact+manager3-epicerie@comdis.local",
-        telephone: "0822222222",
-        adresse: "Rabat",
-      },
-    ],
-    productSeed: [
-      {
-        codeBarres: "6111000003011",
-        nom: "Coca Cola 33cl",
-        categorie: "Boissons",
-        prixAchat: 4.7,
-        prixVente: 6.9,
-        seuilMinimum: 10,
-        supplierIndex: 0,
-      },
-      {
-        codeBarres: "6111000003012",
-        nom: "Eau Minerale 1.5L",
-        categorie: "Boissons",
-        prixAchat: 2.6,
-        prixVente: 4.1,
-        seuilMinimum: 12,
-        supplierIndex: 0,
-      },
-      {
-        codeBarres: "6111000003013",
-        nom: "Biscuits Chocolat",
-        categorie: "Snacks",
-        prixAchat: 3.2,
-        prixVente: 5.3,
-        seuilMinimum: 8,
-        supplierIndex: 1,
-      },
-      {
-        codeBarres: "6111000003014",
-        nom: "Riz 1kg",
-        categorie: "Epicerie",
-        prixAchat: 10.1,
-        prixVente: 14.4,
-        seuilMinimum: 6,
-        supplierIndex: 1,
-      },
-      {
-        codeBarres: "6111000003015",
-        nom: "Savon Liquide",
-        categorie: "Hygiene",
-        prixAchat: 12.1,
-        prixVente: 18.2,
-        seuilMinimum: 5,
-        supplierIndex: 1,
-      },
-    ],
-    stockSeed: [
-      { productIndex: 0, storeIndex: 0, quantite: 42 },
-      { productIndex: 1, storeIndex: 1, quantite: 52 },
-      { productIndex: 2, storeIndex: 1, quantite: 16 },
-      { productIndex: 3, storeIndex: 2, quantite: 24 },
-      { productIndex: 4, storeIndex: 3, quantite: 12 },
-    ],
-  },
+const MAIN_ORGANISATION_NAME = "Manager 1";
+const PROTECTED_EMPLOYEE_EMAILS = [
+  "caisse1@comdis.local",
+  "caisse2@comdis.local",
+  "caisse3@comdis.local",
+  "caisse4@comdis.local",
+  "caisse5@comdis.local",
+  "caisse6@comdis.local",
 ];
+const PROTECTED_EMAILS = ["admin@comdis.local", ...PROTECTED_EMPLOYEE_EMAILS];
+
+const mainOrganisationConfig = {
+  name: MAIN_ORGANISATION_NAME,
+  admin: {
+    nom: "Administrateur Principal",
+    email: "admin@comdis.local",
+    password: "Admin12345",
+  },
+  stores: [
+    {
+      nom: "Point de Vente Centre",
+      adresse: "12 Avenue Hassan II",
+      telephone: "0600000001",
+    },
+    {
+      nom: "Point de Vente Nord",
+      adresse: "25 Rue Atlas",
+      telephone: "0600000002",
+    },
+    {
+      nom: "Point de Vente Sud",
+      adresse: "8 Boulevard Mohammed V",
+      telephone: "0600000003",
+    },
+    {
+      nom: "Point de Vente Est",
+      adresse: "44 Rue Al Amal",
+      telephone: "0600000004",
+    },
+  ],
+  cashRegistersByStore: [
+    [
+      { nom: "Caisse 1", code: "M1-STORE1-CAISSE1" },
+      { nom: "Caisse 2", code: "M1-STORE1-CAISSE2" },
+    ],
+    [
+      { nom: "Caisse 1", code: "M1-STORE2-CAISSE1" },
+      { nom: "Caisse 2", code: "M1-STORE2-CAISSE2" },
+    ],
+    [{ nom: "Caisse 1", code: "M1-STORE3-CAISSE1" }],
+    [{ nom: "Caisse 1", code: "M1-STORE4-CAISSE1" }],
+  ],
+  employees: [
+    {
+      nom: "Employe Caisse 1",
+      email: "caisse1@comdis.local",
+      password: "Caisse12345",
+      storeIndex: 0,
+      cashRegisterIndex: 0,
+    },
+    {
+      nom: "Employe Caisse 2",
+      email: "caisse2@comdis.local",
+      password: "Caisse12345",
+      storeIndex: 0,
+      cashRegisterIndex: 1,
+    },
+    {
+      nom: "Employe Caisse 3",
+      email: "caisse3@comdis.local",
+      password: "Caisse12345",
+      storeIndex: 1,
+      cashRegisterIndex: 0,
+    },
+    {
+      nom: "Employe Caisse 4",
+      email: "caisse4@comdis.local",
+      password: "Caisse12345",
+      storeIndex: 1,
+      cashRegisterIndex: 1,
+    },
+    {
+      nom: "Employe Caisse 5",
+      email: "caisse5@comdis.local",
+      password: "Caisse12345",
+      storeIndex: 2,
+      cashRegisterIndex: 0,
+    },
+    {
+      nom: "Employe Caisse 6",
+      email: "caisse6@comdis.local",
+      password: "Caisse12345",
+      storeIndex: 3,
+      cashRegisterIndex: 0,
+    },
+  ],
+  supplierSeed: [
+    {
+      nom: "Atlas Boissons",
+      email: "contact+manager1-atlas@comdis.local",
+      telephone: "0611111111",
+      adresse: "Casablanca",
+    },
+    {
+      nom: "Marche Epicerie",
+      email: "contact+manager1-epicerie@comdis.local",
+      telephone: "0622222222",
+      adresse: "Rabat",
+    },
+  ],
+  productSeed: [
+    {
+      codeBarres: "6111000001011",
+      nom: "Coca Cola 33cl",
+      categorie: "Boissons",
+      prixAchat: 4.5,
+      prixVente: 6.5,
+      seuilMinimum: 10,
+      supplierIndex: 0,
+    },
+    {
+      codeBarres: "6111000001012",
+      nom: "Eau Minerale 1.5L",
+      categorie: "Boissons",
+      prixAchat: 2.5,
+      prixVente: 4,
+      seuilMinimum: 12,
+      supplierIndex: 0,
+    },
+    {
+      codeBarres: "6111000001013",
+      nom: "Biscuits Chocolat",
+      categorie: "Snacks",
+      prixAchat: 3,
+      prixVente: 5,
+      seuilMinimum: 8,
+      supplierIndex: 1,
+    },
+    {
+      codeBarres: "6111000001014",
+      nom: "Riz 1kg",
+      categorie: "Epicerie",
+      prixAchat: 10,
+      prixVente: 14,
+      seuilMinimum: 6,
+      supplierIndex: 1,
+    },
+    {
+      codeBarres: "6111000001015",
+      nom: "Savon Liquide",
+      categorie: "Hygiene",
+      prixAchat: 12,
+      prixVente: 18,
+      seuilMinimum: 5,
+      supplierIndex: 1,
+    },
+  ],
+  stockSeed: [
+    { productIndex: 0, storeIndex: 0, quantite: 50 },
+    { productIndex: 1, storeIndex: 0, quantite: 80 },
+    { productIndex: 2, storeIndex: 0, quantite: 30 },
+    { productIndex: 3, storeIndex: 1, quantite: 25 },
+    { productIndex: 4, storeIndex: 1, quantite: 20 },
+    { productIndex: 0, storeIndex: 2, quantite: 40 },
+    { productIndex: 2, storeIndex: 2, quantite: 18 },
+    { productIndex: 1, storeIndex: 3, quantite: 60 },
+    { productIndex: 3, storeIndex: 3, quantite: 15 },
+    { productIndex: 4, storeIndex: 3, quantite: 10 },
+  ],
+};
+
+const managerCleanupStoreWhere = {
+  OR: [
+    { nom: { contains: "Manager 2", mode: "insensitive" } },
+    { nom: { contains: "Manager 3", mode: "insensitive" } },
+  ],
+};
+
+const managerCleanupUserWhere = {
+  OR: [
+    { email: "manager2@comdis.local" },
+    { email: "manager3@comdis.local" },
+    { email: { startsWith: "m2-caisse" } },
+    { email: { startsWith: "m3-caisse" } },
+  ],
+};
 
 async function upsertOrganisation(name) {
   return prisma.organisation.upsert({
@@ -484,7 +325,232 @@ async function upsertUser(data) {
   });
 }
 
-async function seedOrganisation(config) {
+async function cleanupLegacyManagerOrganisations() {
+  const organisationsToDelete = await prisma.organisation.findMany({
+    where: {
+      OR: [
+        { name: "Manager 2" },
+        { name: "Manager 3" },
+      ],
+    },
+    select: {
+      id: true,
+      name: true,
+    },
+  });
+
+  if (!organisationsToDelete.length) {
+    return;
+  }
+
+  await prisma.organisation.deleteMany({
+    where: {
+      id: {
+        in: organisationsToDelete.map((organisation) => organisation.id),
+      },
+    },
+  });
+}
+
+async function cleanupLegacyManagerStoresAndUsers() {
+  const leftoverStores = await prisma.pointDeVente.findMany({
+    where: managerCleanupStoreWhere,
+    select: {
+      id: true,
+    },
+  });
+  const leftoverStoreIds = leftoverStores.map((store) => store.id);
+
+  const leftoverCashRegisters = leftoverStoreIds.length
+    ? await prisma.caisse.findMany({
+        where: {
+          pointDeVenteId: {
+            in: leftoverStoreIds,
+          },
+        },
+        select: {
+          id: true,
+        },
+      })
+    : [];
+  const leftoverCashRegisterIds = leftoverCashRegisters.map((caisse) => caisse.id);
+
+  const protectedUsersToDetach = await prisma.utilisateur.findMany({
+    where: {
+      email: {
+        in: PROTECTED_EMAILS,
+      },
+      OR: [
+        leftoverStoreIds.length
+          ? {
+              pointDeVenteId: {
+                in: leftoverStoreIds,
+              },
+            }
+          : undefined,
+        leftoverCashRegisterIds.length
+          ? {
+              caisseId: {
+                in: leftoverCashRegisterIds,
+              },
+            }
+          : undefined,
+      ].filter(Boolean),
+    },
+    select: {
+      id: true,
+    },
+  });
+
+  if (protectedUsersToDetach.length) {
+    await prisma.utilisateur.updateMany({
+      where: {
+        id: {
+          in: protectedUsersToDetach.map((user) => user.id),
+        },
+      },
+      data: {
+        pointDeVenteId: null,
+        caisseId: null,
+      },
+    });
+  }
+
+  const usersToDelete = await prisma.utilisateur.findMany({
+    where: {
+      email: {
+        notIn: PROTECTED_EMAILS,
+      },
+      OR: [
+        managerCleanupUserWhere,
+        leftoverStoreIds.length
+          ? {
+              pointDeVenteId: {
+                in: leftoverStoreIds,
+              },
+            }
+          : undefined,
+        leftoverCashRegisterIds.length
+          ? {
+              caisseId: {
+                in: leftoverCashRegisterIds,
+              },
+            }
+          : undefined,
+      ].filter(Boolean),
+    },
+    select: {
+      id: true,
+    },
+  });
+  const userIdsToDelete = usersToDelete.map((user) => user.id);
+
+  const salesToDelete = leftoverStoreIds.length
+    ? await prisma.vente.findMany({
+        where: {
+          pointDeVenteId: {
+            in: leftoverStoreIds,
+          },
+        },
+        select: {
+          id: true,
+        },
+      })
+    : [];
+  const saleIdsToDelete = salesToDelete.map((sale) => sale.id);
+
+  if (userIdsToDelete.length) {
+    await prisma.loginApprovalRequest.deleteMany({
+      where: {
+        userId: {
+          in: userIdsToDelete,
+        },
+      },
+    });
+  }
+
+  if (saleIdsToDelete.length) {
+    await prisma.retour.deleteMany({
+      where: {
+        venteId: {
+          in: saleIdsToDelete,
+        },
+      },
+    });
+
+    await prisma.venteLigne.deleteMany({
+      where: {
+        venteId: {
+          in: saleIdsToDelete,
+        },
+      },
+    });
+
+    await prisma.vente.deleteMany({
+      where: {
+        id: {
+          in: saleIdsToDelete,
+        },
+      },
+    });
+  }
+
+  if (leftoverStoreIds.length) {
+    await prisma.stockMovement.deleteMany({
+      where: {
+        pointDeVenteId: {
+          in: leftoverStoreIds,
+        },
+      },
+    });
+
+    await prisma.stock.deleteMany({
+      where: {
+        pointDeVenteId: {
+          in: leftoverStoreIds,
+        },
+      },
+    });
+  }
+
+  if (userIdsToDelete.length) {
+    await prisma.utilisateur.deleteMany({
+      where: {
+        id: {
+          in: userIdsToDelete,
+        },
+      },
+    });
+  }
+
+  if (leftoverCashRegisterIds.length) {
+    await prisma.caisse.deleteMany({
+      where: {
+        id: {
+          in: leftoverCashRegisterIds,
+        },
+      },
+    });
+  }
+
+  if (leftoverStoreIds.length) {
+    await prisma.pointDeVente.deleteMany({
+      where: {
+        id: {
+          in: leftoverStoreIds,
+        },
+      },
+    });
+  }
+}
+
+async function cleanupLegacyManagerData() {
+  console.log("Cleaning legacy Manager 2 / Manager 3 data...");
+  await cleanupLegacyManagerOrganisations();
+  await cleanupLegacyManagerStoresAndUsers();
+}
+
+async function seedMainOrganisation(config) {
   const organisation = await upsertOrganisation(config.name);
   const hashedAdminPassword = await bcrypt.hash(config.admin.password, 10);
 
@@ -592,25 +658,19 @@ async function seedOrganisation(config) {
       quantite: stockEntry.quantite,
     });
   }
-
-  return {
-    organisation,
-    stores,
-    cashRegisters,
-  };
 }
 
 async function main() {
-  console.log("Starting multi-tenant seed...");
+  console.log("Starting single-organisation seed...");
 
-  for (const config of organisationConfigs) {
-    await seedOrganisation(config);
-  }
+  await cleanupLegacyManagerData();
+  await seedMainOrganisation(mainOrganisationConfig);
 
   console.log("Seed completed successfully.");
-  console.log("Manager 1: admin@comdis.local / Admin12345");
-  console.log("Manager 2: manager2@comdis.local / Manager212345");
-  console.log("Manager 3: manager3@comdis.local / Manager312345");
+  console.log("Admin: admin@comdis.local / Admin12345");
+  console.log(
+    "Employes: caisse1@comdis.local, caisse2@comdis.local, caisse3@comdis.local, caisse4@comdis.local, caisse5@comdis.local, caisse6@comdis.local"
+  );
 }
 
 main()
