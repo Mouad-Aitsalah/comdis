@@ -35,6 +35,7 @@ const authMiddleware = async (req, res, next) => {
         email: true,
         role: true,
         estActif: true,
+        organisationId: true,
         pointDeVenteId: true,
         caisseId: true,
         createdAt: true,

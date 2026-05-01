@@ -1,4 +1,5 @@
 const prisma = require("../config/prisma");
+const { getOrganisationIdFromUser } = require("../utils/organisationScope");
 
 const parseId = (value) => {
   const parsedValue = Number(value);
@@ -55,7 +56,11 @@ const pointDeVenteInclude = {
 
 const getAllPointsDeVente = async (req, res) => {
   try {
+    const organisationId = getOrganisationIdFromUser(req.user);
     const pointsDeVente = await prisma.pointDeVente.findMany({
+      where: {
+        organisationId,
+      },
       include: pointDeVenteInclude,
       orderBy: {
         id: "desc",
@@ -75,6 +80,7 @@ const getAllPointsDeVente = async (req, res) => {
 
 const getPointDeVenteById = async (req, res) => {
   try {
+    const organisationId = getOrganisationIdFromUser(req.user);
     const pointDeVenteId = parseId(req.params.id);
 
     if (!pointDeVenteId) {
@@ -83,8 +89,11 @@ const getPointDeVenteById = async (req, res) => {
       });
     }
 
-    const pointDeVente = await prisma.pointDeVente.findUnique({
-      where: { id: pointDeVenteId },
+    const pointDeVente = await prisma.pointDeVente.findFirst({
+      where: {
+        organisationId,
+        id: pointDeVenteId,
+      },
       include: pointDeVenteInclude,
     });
 
@@ -107,6 +116,7 @@ const getPointDeVenteById = async (req, res) => {
 
 const createPointDeVente = async (req, res) => {
   try {
+    const organisationId = getOrganisationIdFromUser(req.user);
     const { nom, adresse, telephone } = req.body;
 
     if (!nom || !String(nom).trim()) {
@@ -117,6 +127,7 @@ const createPointDeVente = async (req, res) => {
 
     const pointDeVente = await prisma.pointDeVente.create({
       data: {
+        organisationId,
         nom: String(nom).trim(),
         adresse: normalizeOptionalString(adresse),
         telephone: normalizeOptionalString(telephone),
@@ -138,6 +149,7 @@ const createPointDeVente = async (req, res) => {
 
 const updatePointDeVente = async (req, res) => {
   try {
+    const organisationId = getOrganisationIdFromUser(req.user);
     const pointDeVenteId = parseId(req.params.id);
 
     if (!pointDeVenteId) {
@@ -146,8 +158,11 @@ const updatePointDeVente = async (req, res) => {
       });
     }
 
-    const existingPointDeVente = await prisma.pointDeVente.findUnique({
-      where: { id: pointDeVenteId },
+    const existingPointDeVente = await prisma.pointDeVente.findFirst({
+      where: {
+        organisationId,
+        id: pointDeVenteId,
+      },
     });
 
     if (!existingPointDeVente) {
@@ -199,6 +214,7 @@ const updatePointDeVente = async (req, res) => {
 
 const deletePointDeVente = async (req, res) => {
   try {
+    const organisationId = getOrganisationIdFromUser(req.user);
     const pointDeVenteId = parseId(req.params.id);
 
     if (!pointDeVenteId) {
@@ -207,8 +223,11 @@ const deletePointDeVente = async (req, res) => {
       });
     }
 
-    const existingPointDeVente = await prisma.pointDeVente.findUnique({
-      where: { id: pointDeVenteId },
+    const existingPointDeVente = await prisma.pointDeVente.findFirst({
+      where: {
+        organisationId,
+        id: pointDeVenteId,
+      },
       include: {
         _count: {
           select: {

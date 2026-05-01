@@ -1,5 +1,6 @@
 const { Prisma } = require("@prisma/client");
 const prisma = require("../config/prisma");
+const { getOrganisationIdFromUser } = require("../utils/organisationScope");
 
 const saleInclude = {
   pointDeVente: {
@@ -84,8 +85,9 @@ const getStartOfMonth = (date) =>
 const getEndOfMonth = (date) =>
   new Date(date.getFullYear(), date.getMonth() + 1, 0, 23, 59, 59, 999);
 
-const buildReport = async (periodType, startDate, endDate) => {
+const buildReport = async (organisationId, periodType, startDate, endDate) => {
   const where = {
+    organisationId,
     dateVente: {
       gte: startDate,
       lte: endDate,
@@ -123,8 +125,14 @@ const buildReport = async (periodType, startDate, endDate) => {
 
 const getDayReport = async (req, res) => {
   try {
+    const organisationId = getOrganisationIdFromUser(req.user);
     const now = new Date();
-    const report = await buildReport("day", getStartOfDay(now), getEndOfDay(now));
+    const report = await buildReport(
+      organisationId,
+      "day",
+      getStartOfDay(now),
+      getEndOfDay(now)
+    );
 
     return res.status(200).json(report);
   } catch (error) {
@@ -137,8 +145,14 @@ const getDayReport = async (req, res) => {
 
 const getWeekReport = async (req, res) => {
   try {
+    const organisationId = getOrganisationIdFromUser(req.user);
     const now = new Date();
-    const report = await buildReport("week", getStartOfWeek(now), getEndOfWeek(now));
+    const report = await buildReport(
+      organisationId,
+      "week",
+      getStartOfWeek(now),
+      getEndOfWeek(now)
+    );
 
     return res.status(200).json(report);
   } catch (error) {
@@ -151,8 +165,14 @@ const getWeekReport = async (req, res) => {
 
 const getMonthReport = async (req, res) => {
   try {
+    const organisationId = getOrganisationIdFromUser(req.user);
     const now = new Date();
-    const report = await buildReport("month", getStartOfMonth(now), getEndOfMonth(now));
+    const report = await buildReport(
+      organisationId,
+      "month",
+      getStartOfMonth(now),
+      getEndOfMonth(now)
+    );
 
     return res.status(200).json(report);
   } catch (error) {

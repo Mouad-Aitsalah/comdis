@@ -1,6 +1,7 @@
 const bcrypt = require("bcryptjs");
 const prisma = require("../config/prisma");
 const { validateSchema } = require("../utils/validation");
+const { getOrganisationIdFromUser } = require("../utils/organisationScope");
 const {
   userCreateSchema,
   userUpdateSchema,
@@ -48,6 +49,7 @@ const userSelect = {
   estActif: true,
   pointDeVenteId: true,
   caisseId: true,
+  organisationId: true,
   createdAt: true,
   updatedAt: true,
   pointDeVente: {
@@ -93,7 +95,11 @@ const formatUser = (user) => ({
 
 const getAllUsers = async (req, res) => {
   try {
+    const organisationId = getOrganisationIdFromUser(req.user);
     const utilisateurs = await prisma.utilisateur.findMany({
+      where: {
+        organisationId,
+      },
       select: userSelect,
       orderBy: {
         id: "desc",
@@ -113,6 +119,7 @@ const getAllUsers = async (req, res) => {
 
 const getUserById = async (req, res) => {
   try {
+    const organisationId = getOrganisationIdFromUser(req.user);
     const userId = parseId(req.params.id);
 
     if (!userId) {
@@ -121,8 +128,11 @@ const getUserById = async (req, res) => {
       });
     }
 
-    const utilisateur = await prisma.utilisateur.findUnique({
-      where: { id: userId },
+    const utilisateur = await prisma.utilisateur.findFirst({
+      where: {
+        organisationId,
+        id: userId,
+      },
       select: userSelect,
     });
 
@@ -145,6 +155,7 @@ const getUserById = async (req, res) => {
 
 const createUser = async (req, res) => {
   try {
+    const organisationId = getOrganisationIdFromUser(req.user);
     const parsedInput = validateSchema(userCreateSchema, req.body);
     const { nom, email, motDePasse, role, estActif, pointDeVenteId, caisseId } = parsedInput;
 
@@ -209,8 +220,11 @@ const createUser = async (req, res) => {
     }
 
     if (parsedPointDeVenteId) {
-      const pointDeVente = await prisma.pointDeVente.findUnique({
-        where: { id: parsedPointDeVenteId },
+      const pointDeVente = await prisma.pointDeVente.findFirst({
+        where: {
+          organisationId,
+          id: parsedPointDeVenteId,
+        },
       });
 
       if (!pointDeVente) {
@@ -221,8 +235,11 @@ const createUser = async (req, res) => {
     }
 
     if (parsedCaisseId) {
-      const caisse = await prisma.caisse.findUnique({
-        where: { id: parsedCaisseId },
+      const caisse = await prisma.caisse.findFirst({
+        where: {
+          organisationId,
+          id: parsedCaisseId,
+        },
         select: {
           id: true,
           pointDeVenteId: true,
@@ -253,6 +270,7 @@ const createUser = async (req, res) => {
 
     const utilisateur = await prisma.utilisateur.create({
       data: {
+        organisationId,
         nom: normalizedNom,
         email: normalizedEmail,
         motDePasse: hashedPassword,
@@ -284,6 +302,7 @@ const createUser = async (req, res) => {
 
 const updateUser = async (req, res) => {
   try {
+    const organisationId = getOrganisationIdFromUser(req.user);
     const userId = parseId(req.params.id);
 
     if (!userId) {
@@ -292,8 +311,11 @@ const updateUser = async (req, res) => {
       });
     }
 
-    const existingUser = await prisma.utilisateur.findUnique({
-      where: { id: userId },
+    const existingUser = await prisma.utilisateur.findFirst({
+      where: {
+        organisationId,
+        id: userId,
+      },
       select: userSelect,
     });
 
@@ -418,8 +440,11 @@ const updateUser = async (req, res) => {
     }
 
     if (finalPointDeVenteId) {
-      const pointDeVente = await prisma.pointDeVente.findUnique({
-        where: { id: finalPointDeVenteId },
+      const pointDeVente = await prisma.pointDeVente.findFirst({
+        where: {
+          organisationId,
+          id: finalPointDeVenteId,
+        },
       });
 
       if (!pointDeVente) {
@@ -430,8 +455,11 @@ const updateUser = async (req, res) => {
     }
 
     if (finalCaisseId) {
-      const caisse = await prisma.caisse.findUnique({
-        where: { id: finalCaisseId },
+      const caisse = await prisma.caisse.findFirst({
+        where: {
+          organisationId,
+          id: finalCaisseId,
+        },
         select: {
           id: true,
           pointDeVenteId: true,
@@ -487,6 +515,7 @@ const updateUser = async (req, res) => {
 
 const deleteUser = async (req, res) => {
   try {
+    const organisationId = getOrganisationIdFromUser(req.user);
     const userId = parseId(req.params.id);
 
     if (!userId) {
@@ -495,8 +524,11 @@ const deleteUser = async (req, res) => {
       });
     }
 
-    const existingUser = await prisma.utilisateur.findUnique({
-      where: { id: userId },
+    const existingUser = await prisma.utilisateur.findFirst({
+      where: {
+        organisationId,
+        id: userId,
+      },
       include: {
         _count: {
           select: {

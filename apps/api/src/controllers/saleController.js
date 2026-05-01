@@ -1,6 +1,7 @@
 const { Prisma } = require("@prisma/client");
 const { randomBytes } = require("crypto");
 const prisma = require("../config/prisma");
+const { getOrganisationIdFromUser } = require("../utils/organisationScope");
 
 const parseId = (value) => {
   const parsedValue = Number(value);
@@ -153,7 +154,11 @@ const normalizeItems = (items) => {
 
 const getAllSales = async (req, res) => {
   try {
+    const organisationId = getOrganisationIdFromUser(req.user);
     const sales = await prisma.vente.findMany({
+      where: {
+        organisationId,
+      },
       include: saleInclude,
       orderBy: {
         dateVente: "desc",
@@ -173,6 +178,7 @@ const getAllSales = async (req, res) => {
 
 const getSaleById = async (req, res) => {
   try {
+    const organisationId = getOrganisationIdFromUser(req.user);
     const saleId = parseId(req.params.id);
 
     if (!saleId) {
@@ -181,8 +187,11 @@ const getSaleById = async (req, res) => {
       });
     }
 
-    const sale = await prisma.vente.findUnique({
-      where: { id: saleId },
+    const sale = await prisma.vente.findFirst({
+      where: {
+        id: saleId,
+        organisationId,
+      },
       include: saleInclude,
     });
 
@@ -205,6 +214,7 @@ const getSaleById = async (req, res) => {
 
 const createSale = async (req, res) => {
   try {
+    const organisationId = getOrganisationIdFromUser(req.user);
     const requestedPointDeVenteId = parseId(
       req.body.pointDeVenteId ?? req.body.storeId
     );
@@ -255,10 +265,11 @@ const createSale = async (req, res) => {
         where: { id: pointDeVenteId },
         select: {
           id: true,
+          organisationId: true,
         },
       });
 
-      if (!pointDeVente) {
+      if (!pointDeVente || pointDeVente.organisationId !== organisationId) {
         throw createHttpError(404, "Point de vente introuvable.");
       }
 
@@ -266,12 +277,13 @@ const createSale = async (req, res) => {
         where: { id: caisseId },
         select: {
           id: true,
+          organisationId: true,
           pointDeVenteId: true,
           estActive: true,
         },
       });
 
-      if (!caisse) {
+      if (!caisse || caisse.organisationId !== organisationId) {
         throw createHttpError(404, "Caisse introuvable.");
       }
 
@@ -290,6 +302,7 @@ const createSale = async (req, res) => {
         where: { id: utilisateurId },
         select: {
           id: true,
+          organisationId: true,
           role: true,
           estActif: true,
           pointDeVenteId: true,
@@ -297,7 +310,7 @@ const createSale = async (req, res) => {
         },
       });
 
-      if (!utilisateur) {
+      if (!utilisateur || utilisateur.organisationId !== organisationId) {
         throw createHttpError(404, "Utilisateur introuvable.");
       }
 
@@ -323,6 +336,7 @@ const createSale = async (req, res) => {
 
       const produits = await tx.produit.findMany({
         where: {
+          organisationId,
           id: {
             in: productIds,
           },
@@ -347,6 +361,7 @@ const createSale = async (req, res) => {
 
       const stocks = await tx.stock.findMany({
         where: {
+          organisationId,
           pointDeVenteId,
           produitId: {
             in: productIds,
@@ -405,6 +420,7 @@ const createSale = async (req, res) => {
 
       const createdSale = await tx.vente.create({
         data: {
+          organisationId,
           numeroTicket: generateTicketNumber(pointDeVenteId),
           total,
           paymentMethod,
@@ -412,7 +428,10 @@ const createSale = async (req, res) => {
           caisseId,
           utilisateurId,
           lignes: {
-            create: lignesData,
+            create: lignesData.map((ligne) => ({
+              ...ligne,
+              organisationId,
+            })),
           },
         },
         select: {
@@ -424,9 +443,10 @@ const createSale = async (req, res) => {
         const produit = productMap.get(item.produitId);
 
         const updatedStock = await tx.stock.updateMany({
-          where: {
-            produitId: item.produitId,
-            pointDeVenteId,
+        where: {
+          organisationId,
+          produitId: item.produitId,
+          pointDeVenteId,
             quantite: {
               gte: item.quantite,
             },

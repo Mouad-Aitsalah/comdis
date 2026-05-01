@@ -1,4 +1,8 @@
 const prisma = require("../config/prisma");
+const {
+  getOrganisationIdFromUser,
+  ensureEmployeeStoreAccess,
+} = require("../utils/organisationScope");
 
 const parseId = (value) => {
   const parsedValue = Number(value);
@@ -53,14 +57,14 @@ const getEmployeePointDeVenteId = (user) => {
   return user.pointDeVenteId || null;
 };
 
-const validateProductAndPointDeVente = async (produitId, pointDeVenteId) => {
+const validateProductAndPointDeVente = async (organisationId, produitId, pointDeVenteId) => {
   const [produit, pointDeVente] = await Promise.all([
-    prisma.produit.findUnique({
-      where: { id: produitId },
+    prisma.produit.findFirst({
+      where: { id: produitId, organisationId },
       select: { id: true, estActif: true },
     }),
-    prisma.pointDeVente.findUnique({
-      where: { id: pointDeVenteId },
+    prisma.pointDeVente.findFirst({
+      where: { id: pointDeVenteId, organisationId },
       select: { id: true },
     }),
   ]);
@@ -91,6 +95,7 @@ const validateProductAndPointDeVente = async (produitId, pointDeVenteId) => {
 
 const getAllStocks = async (req, res) => {
   try {
+    const organisationId = getOrganisationIdFromUser(req.user);
     const employeePointDeVenteId = getEmployeePointDeVenteId(req.user);
 
     if (req.user.role === "EMPLOYE" && !employeePointDeVenteId) {
@@ -102,8 +107,9 @@ const getAllStocks = async (req, res) => {
     const stocks = await prisma.stock.findMany({
       where:
         req.user.role === "ADMIN"
-          ? {}
+          ? { organisationId }
           : {
+              organisationId,
               pointDeVenteId: employeePointDeVenteId,
             },
       include: stockInclude,
@@ -125,6 +131,7 @@ const getAllStocks = async (req, res) => {
 
 const getStockById = async (req, res) => {
   try {
+    const organisationId = getOrganisationIdFromUser(req.user);
     const stockId = parseId(req.params.id);
 
     if (!stockId) {
@@ -133,8 +140,11 @@ const getStockById = async (req, res) => {
       });
     }
 
-    const stock = await prisma.stock.findUnique({
-      where: { id: stockId },
+    const stock = await prisma.stock.findFirst({
+      where: {
+        id: stockId,
+        organisationId,
+      },
       include: stockInclude,
     });
 
@@ -174,6 +184,7 @@ const getStockById = async (req, res) => {
 
 const stockEntry = async (req, res) => {
   try {
+    const organisationId = getOrganisationIdFromUser(req.user);
     const produitId = parseId(req.body.produitId);
     const pointDeVenteId = parseId(req.body.pointDeVenteId);
     const quantite = parsePositiveInteger(req.body.quantite);
@@ -184,7 +195,11 @@ const stockEntry = async (req, res) => {
       });
     }
 
-    const relationError = await validateProductAndPointDeVente(produitId, pointDeVenteId);
+    const relationError = await validateProductAndPointDeVente(
+      organisationId,
+      produitId,
+      pointDeVenteId
+    );
 
     if (relationError) {
       return res.status(relationError.status).json({
@@ -194,7 +209,8 @@ const stockEntry = async (req, res) => {
 
     const stock = await prisma.stock.upsert({
       where: {
-        produitId_pointDeVenteId: {
+        organisationId_produitId_pointDeVenteId: {
+          organisationId,
           produitId,
           pointDeVenteId,
         },
@@ -205,6 +221,7 @@ const stockEntry = async (req, res) => {
         },
       },
       create: {
+        organisationId,
         produitId,
         pointDeVenteId,
         quantite,
@@ -226,6 +243,7 @@ const stockEntry = async (req, res) => {
 
 const stockExit = async (req, res) => {
   try {
+    const organisationId = getOrganisationIdFromUser(req.user);
     const produitId = parseId(req.body.produitId);
     const pointDeVenteId = parseId(req.body.pointDeVenteId);
     const quantite = parsePositiveInteger(req.body.quantite);
@@ -236,7 +254,11 @@ const stockExit = async (req, res) => {
       });
     }
 
-    const relationError = await validateProductAndPointDeVente(produitId, pointDeVenteId);
+    const relationError = await validateProductAndPointDeVente(
+      organisationId,
+      produitId,
+      pointDeVenteId
+    );
 
     if (relationError) {
       return res.status(relationError.status).json({
@@ -247,7 +269,8 @@ const stockExit = async (req, res) => {
     const stock = await prisma.$transaction(async (tx) => {
       const existingStock = await tx.stock.findUnique({
         where: {
-          produitId_pointDeVenteId: {
+          organisationId_produitId_pointDeVenteId: {
+            organisationId,
             produitId,
             pointDeVenteId,
           },
@@ -293,6 +316,7 @@ const stockExit = async (req, res) => {
 
 const updateStock = async (req, res) => {
   try {
+    const organisationId = getOrganisationIdFromUser(req.user);
     const stockId = parseId(req.params.id);
     const quantite = parseNonNegativeInteger(req.body.quantite);
 
@@ -308,8 +332,11 @@ const updateStock = async (req, res) => {
       });
     }
 
-    const existingStock = await prisma.stock.findUnique({
-      where: { id: stockId },
+    const existingStock = await prisma.stock.findFirst({
+      where: {
+        id: stockId,
+        organisationId,
+      },
     });
 
     if (!existingStock) {
@@ -317,6 +344,8 @@ const updateStock = async (req, res) => {
         message: "Stock introuvable.",
       });
     }
+
+    ensureEmployeeStoreAccess(req.user, existingStock.pointDeVenteId);
 
     const stock = await prisma.stock.update({
       where: { id: stockId },

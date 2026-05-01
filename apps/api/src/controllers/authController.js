@@ -2,6 +2,7 @@ const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const prisma = require("../config/prisma");
 const { validateSchema } = require("../utils/validation");
+const { getOrganisationIdFromUser } = require("../utils/organisationScope");
 const {
   authRegisterSchema,
   authLoginSchema,
@@ -41,6 +42,7 @@ const formatUser = (user) => ({
   caisseId: user.caisseId,
   cashRegisterId: user.caisseId,
   cashRegisterName: user.caisse ? user.caisse.nom : null,
+  organisationId: user.organisationId,
   createdAt: user.createdAt,
   updatedAt: user.updatedAt,
 });
@@ -53,6 +55,7 @@ const createToken = (user) =>
       id: user.id,
       email: user.email,
       role: user.role,
+      organisationId: user.organisationId,
       pointDeVenteId: user.pointDeVenteId,
       caisseId: user.caisseId,
     },
@@ -79,6 +82,7 @@ const getAdminRequester = async (req) => {
         id: true,
         role: true,
         estActif: true,
+        organisationId: true,
       },
     });
 
@@ -133,11 +137,16 @@ const register = async (req, res) => {
       });
     }
 
+    if (!adminRequester) {
+      return res.status(403).json({
+        message: "Seul un administrateur authentifie peut creer un compte.",
+      });
+    }
+
     const requestedRole = typeof role === "string" ? role.trim().toUpperCase() : "";
     const userRole =
-      adminRequester && ["ADMIN", "EMPLOYE"].includes(requestedRole)
-        ? requestedRole
-        : "EMPLOYE";
+      ["ADMIN", "EMPLOYE"].includes(requestedRole) ? requestedRole : "EMPLOYE";
+    const organisationId = getOrganisationIdFromUser(adminRequester);
     const parsedPointDeVenteId = parsePointDeVenteId(pointDeVenteId);
     const parsedCaisseId = parseCaisseId(caisseId);
 
@@ -176,8 +185,11 @@ const register = async (req, res) => {
     }
 
     if (parsedPointDeVenteId) {
-      const pointDeVente = await prisma.pointDeVente.findUnique({
-        where: { id: parsedPointDeVenteId },
+      const pointDeVente = await prisma.pointDeVente.findFirst({
+        where: {
+          id: parsedPointDeVenteId,
+          organisationId,
+        },
       });
 
       if (!pointDeVente) {
@@ -188,8 +200,11 @@ const register = async (req, res) => {
     }
 
     if (parsedCaisseId) {
-      const caisse = await prisma.caisse.findUnique({
-        where: { id: parsedCaisseId },
+      const caisse = await prisma.caisse.findFirst({
+        where: {
+          id: parsedCaisseId,
+          organisationId,
+        },
         select: {
           id: true,
           pointDeVenteId: true,
@@ -223,6 +238,7 @@ const register = async (req, res) => {
         nom: normalizedNom,
         email: normalizedEmail,
         motDePasse: hashedPassword,
+        organisationId,
         role: userRole,
         pointDeVenteId: parsedPointDeVenteId,
         caisseId: parsedCaisseId,
@@ -288,22 +304,6 @@ const login = async (req, res) => {
     if (!isPasswordValid) {
       return res.status(401).json({
         message: "Email ou mot de passe incorrect.",
-      });
-    }
-
-    if (false) {
-      if (false) {
-        await ensureLoginApprovalRequest(user);
-
-        return res.status(403).json({
-          message: "Acces refuse.",
-        });
-      }
-
-      return res.status(403).json({
-        success: false,
-        code: "FORBIDDEN",
-        message: "Votre accès a été refusé par l'administrateur.",
       });
     }
 
