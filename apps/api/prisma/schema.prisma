@@ -5,6 +5,7 @@ generator client {
 datasource db {
   provider = "postgresql"
   url      = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
 }
 
 enum RoleUtilisateur {
@@ -26,11 +27,33 @@ enum StockMovementType {
   RETURN
 }
 
+model Organisation {
+  id                    String                 @id @default(cuid())
+  name                  String                 @unique
+  createdAt             DateTime               @default(now())
+  updatedAt             DateTime               @updatedAt
+  utilisateurs          Utilisateur[]
+  loginApprovalRequests LoginApprovalRequest[]
+  pointsDeVente         PointDeVente[]
+  caisses               Caisse[]
+  fournisseurs          Fournisseur[]
+  produits              Produit[]
+  clients               Client[]
+  paiementsClient       PaiementClient[]
+  stocks                Stock[]
+  stockMovements        StockMovement[]
+  ventes                Vente[]
+  lignesVente           VenteLigne[]
+  retours               Retour[]
+}
+
 model PointDeVente {
   id             Int             @id @default(autoincrement())
+  organisationId String
   nom            String
   adresse        String?
   telephone      String?
+  organisation   Organisation    @relation(fields: [organisationId], references: [id], onDelete: Cascade)
   utilisateurs   Utilisateur[]
   caisses        Caisse[]
   stocks         Stock[]
@@ -38,25 +61,30 @@ model PointDeVente {
   ventes         Vente[]
   createdAt      DateTime        @default(now())
   updatedAt      DateTime        @updatedAt
+
+  @@index([organisationId])
 }
 
 model Utilisateur {
-  id             Int             @id @default(autoincrement())
-  nom            String
-  email          String          @unique
-  motDePasse     String
-  role           RoleUtilisateur @default(EMPLOYE)
-  estActif       Boolean         @default(true)
-  approvalStatus ApprovalStatus  @default(PENDING)
-  pointDeVenteId Int?
-  pointDeVente   PointDeVente?   @relation(fields: [pointDeVenteId], references: [id])
-  caisseId       Int?
-  caisse         Caisse?         @relation(fields: [caisseId], references: [id])
-  ventes         Vente[]
+  id                    Int                    @id @default(autoincrement())
+  organisationId        String
+  nom                   String
+  email                 String                 @unique
+  motDePasse            String
+  role                  RoleUtilisateur        @default(EMPLOYE)
+  estActif              Boolean                @default(true)
+  approvalStatus        ApprovalStatus         @default(PENDING)
+  organisation          Organisation           @relation(fields: [organisationId], references: [id], onDelete: Cascade)
+  pointDeVenteId        Int?
+  pointDeVente          PointDeVente?          @relation(fields: [pointDeVenteId], references: [id])
+  caisseId              Int?
+  caisse                Caisse?                @relation(fields: [caisseId], references: [id])
+  ventes                Vente[]
   loginApprovalRequests LoginApprovalRequest[]
-  createdAt      DateTime        @default(now())
-  updatedAt      DateTime        @updatedAt
+  createdAt             DateTime               @default(now())
+  updatedAt             DateTime               @updatedAt
 
+  @@index([organisationId])
   @@index([pointDeVenteId])
   @@index([caisseId])
   @@index([approvalStatus])
@@ -64,13 +92,16 @@ model Utilisateur {
 
 model LoginApprovalRequest {
   id         Int            @id @default(autoincrement())
-  userId      Int
-  email       String
-  status      ApprovalStatus @default(PENDING)
-  createdAt   DateTime       @default(now())
-  approvedAt  DateTime?
-  user        Utilisateur    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  organisationId String
+  userId     Int
+  email      String
+  status     ApprovalStatus @default(PENDING)
+  createdAt  DateTime       @default(now())
+  approvedAt DateTime?
+  organisation Organisation @relation(fields: [organisationId], references: [id], onDelete: Cascade)
+  user       Utilisateur    @relation(fields: [userId], references: [id], onDelete: Cascade)
 
+  @@index([organisationId])
   @@index([userId])
   @@index([status])
   @@index([createdAt])
@@ -78,109 +109,135 @@ model LoginApprovalRequest {
 
 model Caisse {
   id             Int           @id @default(autoincrement())
+  organisationId String
   nom            String
-  code           String        @unique
+  code           String
   pointDeVenteId Int
   estActive      Boolean       @default(true)
+  organisation   Organisation  @relation(fields: [organisationId], references: [id], onDelete: Cascade)
   pointDeVente   PointDeVente  @relation(fields: [pointDeVenteId], references: [id], onDelete: Cascade)
   utilisateurs   Utilisateur[]
   ventes         Vente[]
   createdAt      DateTime      @default(now())
   updatedAt      DateTime      @updatedAt
 
+  @@unique([organisationId, code])
   @@unique([pointDeVenteId, nom])
+  @@index([organisationId])
   @@index([pointDeVenteId])
   @@index([estActive])
 }
 
 model Fournisseur {
-  id        Int       @id @default(autoincrement())
-  nom       String
-  email     String?   @unique
-  telephone String?
-  adresse   String?
-  produits  Produit[]
-  createdAt DateTime  @default(now())
-  updatedAt DateTime  @updatedAt
+  id             Int           @id @default(autoincrement())
+  organisationId String
+  nom            String
+  email          String?
+  telephone      String?
+  adresse        String?
+  organisation   Organisation  @relation(fields: [organisationId], references: [id], onDelete: Cascade)
+  produits       Produit[]
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+
+  @@unique([organisationId, email])
+  @@index([organisationId])
 }
 
 model Produit {
-  id            Int          @id @default(autoincrement())
-  codeBarres    String       @unique
-  nom           String
-  categorie     String
-  prixAchat     Decimal      @db.Decimal(10, 2)
-  prixVente     Decimal      @db.Decimal(10, 2)
-  seuilMinimum  Int          @default(0)
-  estActif      Boolean      @default(true)
-  fournisseurId Int?
-  fournisseur   Fournisseur? @relation(fields: [fournisseurId], references: [id])
-  stocks        Stock[]
+  id             Int             @id @default(autoincrement())
+  organisationId String
+  codeBarres     String
+  nom            String
+  categorie      String
+  prixAchat      Decimal         @db.Decimal(10, 2)
+  prixVente      Decimal         @db.Decimal(10, 2)
+  seuilMinimum   Int             @default(0)
+  estActif       Boolean         @default(true)
+  fournisseurId  Int?
+  organisation   Organisation    @relation(fields: [organisationId], references: [id], onDelete: Cascade)
+  fournisseur    Fournisseur?    @relation(fields: [fournisseurId], references: [id])
+  stocks         Stock[]
   stockMovements StockMovement[]
-  lignesVente   VenteLigne[]
-  retours       Retour[]
-  createdAt     DateTime     @default(now())
-  updatedAt     DateTime     @updatedAt
+  lignesVente    VenteLigne[]
+  retours        Retour[]
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
 
+  @@unique([organisationId, codeBarres])
+  @@index([organisationId])
   @@index([categorie])
   @@index([fournisseurId])
 }
 
 model Client {
-  id           Int      @id @default(autoincrement())
-  numeroClient Int      @unique
-  nom          String
-  telephone    String?
-  email        String?
-  credit       Decimal  @default(0) @db.Decimal(10, 2)
-  estActif     Boolean  @default(true)
-  ventes       Vente[]
-  paiements    PaiementClient[]
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
+  id             Int              @id @default(autoincrement())
+  organisationId String
+  numeroClient   Int
+  nom            String
+  telephone      String?
+  email          String?
+  credit         Decimal          @default(0) @db.Decimal(10, 2)
+  estActif       Boolean          @default(true)
+  organisation   Organisation     @relation(fields: [organisationId], references: [id], onDelete: Cascade)
+  ventes         Vente[]
+  paiements      PaiementClient[]
+  createdAt      DateTime         @default(now())
+  updatedAt      DateTime         @updatedAt
 
+  @@unique([organisationId, numeroClient])
+  @@index([organisationId])
   @@index([nom])
   @@index([estActif])
 }
 
 model PaiementClient {
-  id        Int      @id @default(autoincrement())
-  clientId  Int
-  montant   Decimal  @db.Decimal(10, 2)
-  note      String?
-  createdAt DateTime @default(now())
-  client    Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  id             Int          @id @default(autoincrement())
+  organisationId String
+  clientId       Int
+  montant        Decimal      @db.Decimal(10, 2)
+  note           String?
+  createdAt      DateTime     @default(now())
+  organisation   Organisation @relation(fields: [organisationId], references: [id], onDelete: Cascade)
+  client         Client       @relation(fields: [clientId], references: [id], onDelete: Cascade)
 
+  @@index([organisationId])
   @@index([clientId])
   @@index([createdAt])
 }
 
 model Stock {
   id             Int          @id @default(autoincrement())
+  organisationId String
   produitId      Int
   pointDeVenteId Int
   quantite       Int          @default(0)
+  organisation   Organisation @relation(fields: [organisationId], references: [id], onDelete: Cascade)
   produit        Produit      @relation(fields: [produitId], references: [id], onDelete: Cascade)
   pointDeVente   PointDeVente @relation(fields: [pointDeVenteId], references: [id], onDelete: Cascade)
   createdAt      DateTime     @default(now())
   updatedAt      DateTime     @updatedAt
 
-  @@unique([produitId, pointDeVenteId])
+  @@unique([organisationId, produitId, pointDeVenteId])
+  @@index([organisationId])
   @@index([produitId])
   @@index([pointDeVenteId])
 }
 
 model StockMovement {
   id             Int               @id @default(autoincrement())
+  organisationId String
   produitId      Int
   pointDeVenteId Int
   quantite       Int
   type           StockMovementType
   reason         String?
   createdAt      DateTime          @default(now())
+  organisation   Organisation      @relation(fields: [organisationId], references: [id], onDelete: Cascade)
   produit        Produit           @relation(fields: [produitId], references: [id], onDelete: Cascade)
   pointDeVente   PointDeVente      @relation(fields: [pointDeVenteId], references: [id], onDelete: Cascade)
 
+  @@index([organisationId])
   @@index([produitId])
   @@index([pointDeVenteId])
   @@index([type])
@@ -189,6 +246,7 @@ model StockMovement {
 
 model Vente {
   id             Int          @id @default(autoincrement())
+  organisationId String
   numeroTicket   String       @unique
   total          Decimal      @db.Decimal(10, 2)
   paymentMethod  String       @default("cash")
@@ -198,6 +256,7 @@ model Vente {
   caisseId       Int
   utilisateurId  Int
   clientId       Int?
+  organisation   Organisation @relation(fields: [organisationId], references: [id], onDelete: Cascade)
   pointDeVente   PointDeVente @relation(fields: [pointDeVenteId], references: [id])
   caisse         Caisse       @relation(fields: [caisseId], references: [id])
   utilisateur    Utilisateur  @relation(fields: [utilisateurId], references: [id])
@@ -207,6 +266,7 @@ model Vente {
   createdAt      DateTime     @default(now())
   updatedAt      DateTime     @updatedAt
 
+  @@index([organisationId])
   @@index([dateVente])
   @@index([pointDeVenteId])
   @@index([pointDeVenteId, dateVente])
@@ -216,31 +276,37 @@ model Vente {
 }
 
 model VenteLigne {
-  id           Int      @id @default(autoincrement())
-  venteId      Int
-  produitId    Int
-  quantite     Int
-  prixUnitaire Decimal  @db.Decimal(10, 2)
-  sousTotal    Decimal  @db.Decimal(10, 2)
-  vente        Vente    @relation(fields: [venteId], references: [id], onDelete: Cascade)
-  produit      Produit  @relation(fields: [produitId], references: [id])
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
+  id             Int          @id @default(autoincrement())
+  organisationId String
+  venteId        Int
+  produitId      Int
+  quantite       Int
+  prixUnitaire   Decimal      @db.Decimal(10, 2)
+  sousTotal      Decimal      @db.Decimal(10, 2)
+  organisation   Organisation @relation(fields: [organisationId], references: [id], onDelete: Cascade)
+  vente          Vente        @relation(fields: [venteId], references: [id], onDelete: Cascade)
+  produit        Produit      @relation(fields: [produitId], references: [id])
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
 
+  @@index([organisationId])
   @@index([venteId])
   @@index([produitId])
 }
 
 model Retour {
-  id        Int      @id @default(autoincrement())
-  venteId   Int
-  produitId Int
-  quantite  Int
-  raison    String?
-  createdAt DateTime @default(now())
-  vente     Vente    @relation(fields: [venteId], references: [id], onDelete: Cascade)
-  produit   Produit  @relation(fields: [produitId], references: [id])
+  id             Int          @id @default(autoincrement())
+  organisationId String
+  venteId        Int
+  produitId      Int
+  quantite       Int
+  raison         String?
+  createdAt      DateTime     @default(now())
+  organisation   Organisation @relation(fields: [organisationId], references: [id], onDelete: Cascade)
+  vente          Vente        @relation(fields: [venteId], references: [id], onDelete: Cascade)
+  produit        Produit      @relation(fields: [produitId], references: [id])
 
+  @@index([organisationId])
   @@index([venteId])
   @@index([produitId])
 }

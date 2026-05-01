@@ -3,6 +3,7 @@ const PDFDocument = require("pdfkit");
 const { Prisma } = require("@prisma/client");
 const prisma = require("../config/prisma");
 const { createHttpError } = require("../utils/httpError");
+const { getOrganisationIdFromUser } = require("../utils/organisationScope");
 
 const isBlankString = (value) => typeof value === "string" && value.trim() === "";
 
@@ -146,6 +147,7 @@ const getEmployeeStoreId = (user) => {
 };
 
 const buildSalesWhereClause = (query, user) => {
+  const organisationId = getOrganisationIdFromUser(user);
   const startDate = parseDateFilter(query.startDate, "startDate");
   const endDate = parseDateFilter(query.endDate, "endDate", true);
   const requestedStoreId = parseOptionalPositiveInteger(query.storeId);
@@ -161,7 +163,9 @@ const buildSalesWhereClause = (query, user) => {
     throw createHttpError(400, "cashRegisterId must be a valid positive integer.");
   }
 
-  const where = {};
+  const where = {
+    organisationId,
+  };
 
   if (startDate || endDate) {
     where.dateVente = {};
@@ -296,7 +300,8 @@ const fetchSalesExportData = async (query, user) => {
   };
 };
 
-const fetchReportExportData = async (period) => {
+const fetchReportExportData = async (period, user) => {
+  const organisationId = getOrganisationIdFromUser(user);
   const normalizedPeriod = normalizeRequiredString(period).toLowerCase();
   const range = getDateRange(normalizedPeriod);
 
@@ -306,6 +311,7 @@ const fetchReportExportData = async (period) => {
 
   const sales = await prisma.vente.findMany({
     where: {
+      organisationId,
       dateVente: {
         gte: range.startDate,
         lte: range.endDate,
@@ -408,6 +414,7 @@ const fetchReportExportData = async (period) => {
 };
 
 const fetchStoreReportExportData = async ({ storeId, period, user }) => {
+  const organisationId = getOrganisationIdFromUser(user);
   const parsedStoreId = parseOptionalPositiveInteger(storeId);
   const normalizedPeriod = normalizeRequiredString(period || "day").toLowerCase();
   const employeeStoreId = getEmployeeStoreId(user);
@@ -421,18 +428,18 @@ const fetchStoreReportExportData = async ({ storeId, period, user }) => {
     throw createHttpError(400, "period must be one of: day, week, month.");
   }
 
-  if (user.role === "EMPLOYE") {
-    if (!employeeStoreId) {
-      throw createHttpError(403, "Employee is not assigned to a store.");
-    }
+  if (user.role === "EMPLOYE" && !employeeStoreId) {
+    throw createHttpError(403, "Employee is not assigned to a store.");
+  }
 
-    if (employeeStoreId !== parsedStoreId) {
-      throw createHttpError(403, "Employees can only export their assigned store.");
-    }
+  if (user.role === "EMPLOYE" && employeeStoreId !== parsedStoreId) {
+    throw createHttpError(403, "Employees can only export their assigned store.");
   }
 
   const store = await prisma.pointDeVente.findUnique({
-    where: { id: parsedStoreId },
+    where: {
+      id: parsedStoreId,
+    },
     include: {
       _count: {
         select: {
@@ -443,12 +450,13 @@ const fetchStoreReportExportData = async ({ storeId, period, user }) => {
     },
   });
 
-  if (!store) {
+  if (!store || store.organisationId !== organisationId) {
     throw createHttpError(404, "Store not found.");
   }
 
   const sales = await prisma.vente.findMany({
     where: {
+      organisationId,
       pointDeVenteId: parsedStoreId,
       dateVente: {
         gte: range.startDate,
@@ -887,7 +895,7 @@ const exportSalesPdf = async (req, res) => {
 };
 
 const exportReportExcel = async (req, res) => {
-  const report = await fetchReportExportData(req.query.period);
+  const report = await fetchReportExportData(req.query.period, req.user);
   const workbook = new ExcelJS.Workbook();
 
   const summarySheet = workbook.addWorksheet("Synthese");
@@ -939,7 +947,7 @@ const exportReportExcel = async (req, res) => {
 };
 
 const exportReportPdf = async (req, res) => {
-  const report = await fetchReportExportData(req.query.period);
+  const report = await fetchReportExportData(req.query.period, req.user);
   const doc = new PDFDocument({
     margin: 40,
     size: "A4",

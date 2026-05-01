@@ -1,5 +1,6 @@
 const prisma = require("../config/prisma");
 const { validateSchema } = require("../utils/validation");
+const { getOrganisationIdFromUser } = require("../utils/organisationScope");
 const {
   supplierCreateSchema,
   supplierUpdateSchema,
@@ -38,7 +39,11 @@ const supplierInclude = {
 
 const getAllSuppliers = async (req, res) => {
   try {
+    const organisationId = getOrganisationIdFromUser(req.user);
     const fournisseurs = await prisma.fournisseur.findMany({
+      where: {
+        organisationId,
+      },
       include: supplierInclude,
       orderBy: {
         id: "desc",
@@ -58,6 +63,7 @@ const getAllSuppliers = async (req, res) => {
 
 const getSupplierById = async (req, res) => {
   try {
+    const organisationId = getOrganisationIdFromUser(req.user);
     const supplierId = parseId(req.params.id);
 
     if (!supplierId) {
@@ -66,8 +72,11 @@ const getSupplierById = async (req, res) => {
       });
     }
 
-    const fournisseur = await prisma.fournisseur.findUnique({
-      where: { id: supplierId },
+    const fournisseur = await prisma.fournisseur.findFirst({
+      where: {
+        organisationId,
+        id: supplierId,
+      },
       include: supplierInclude,
     });
 
@@ -90,6 +99,7 @@ const getSupplierById = async (req, res) => {
 
 const createSupplier = async (req, res) => {
   try {
+    const organisationId = getOrganisationIdFromUser(req.user);
     const { nom, email, telephone, adresse } = validateSchema(
       supplierCreateSchema,
       req.body
@@ -100,8 +110,11 @@ const createSupplier = async (req, res) => {
     const normalizedAdresse = normalizeOptionalString(adresse);
 
     if (normalizedEmail) {
-      const existingSupplier = await prisma.fournisseur.findUnique({
-        where: { email: normalizedEmail },
+      const existingSupplier = await prisma.fournisseur.findFirst({
+        where: {
+          organisationId,
+          email: normalizedEmail,
+        },
       });
 
       if (existingSupplier) {
@@ -113,6 +126,7 @@ const createSupplier = async (req, res) => {
 
     const fournisseur = await prisma.fournisseur.create({
       data: {
+        organisationId,
         nom: String(nom).trim(),
         email: normalizedEmail || null,
         telephone: normalizedTelephone,
@@ -141,6 +155,7 @@ const createSupplier = async (req, res) => {
 
 const updateSupplier = async (req, res) => {
   try {
+    const organisationId = getOrganisationIdFromUser(req.user);
     const supplierId = parseId(req.params.id);
 
     if (!supplierId) {
@@ -149,8 +164,11 @@ const updateSupplier = async (req, res) => {
       });
     }
 
-    const existingSupplier = await prisma.fournisseur.findUnique({
-      where: { id: supplierId },
+    const existingSupplier = await prisma.fournisseur.findFirst({
+      where: {
+        organisationId,
+        id: supplierId,
+      },
     });
 
     if (!existingSupplier) {
@@ -183,6 +201,7 @@ const updateSupplier = async (req, res) => {
       if (normalizedEmail) {
         const supplierWithSameEmail = await prisma.fournisseur.findFirst({
           where: {
+            organisationId,
             email: normalizedEmail,
             id: {
               not: supplierId,
@@ -234,6 +253,7 @@ const updateSupplier = async (req, res) => {
 
 const deleteSupplier = async (req, res) => {
   try {
+    const organisationId = getOrganisationIdFromUser(req.user);
     const supplierId = parseId(req.params.id);
 
     if (!supplierId) {
@@ -242,8 +262,11 @@ const deleteSupplier = async (req, res) => {
       });
     }
 
-    const existingSupplier = await prisma.fournisseur.findUnique({
-      where: { id: supplierId },
+    const existingSupplier = await prisma.fournisseur.findFirst({
+      where: {
+        organisationId,
+        id: supplierId,
+      },
       include: {
         _count: {
           select: {

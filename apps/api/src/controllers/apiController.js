@@ -18,6 +18,12 @@ const {
   getReportStatus,
   setReportStatus,
 } = require("../services/reportSettings");
+const {
+  getOrganisationIdFromUser,
+  withOrganisation,
+  ensureEmployeeStoreAccess,
+  ensureEmployeeCashRegisterAccess,
+} = require("../utils/organisationScope");
 
 const isBlankString = (value) => typeof value === "string" && value.trim() === "";
 
@@ -113,6 +119,7 @@ const createToken = (user) =>
       id: user.id,
       email: user.email,
       role: user.role,
+      organisationId: user.organisationId,
       pointDeVenteId: user.pointDeVenteId,
       caisseId: user.caisseId,
     },
@@ -141,6 +148,7 @@ const toApiUser = (user) => ({
   name: user.nom,
   email: user.email,
   role: mapRoleToApi(user.role),
+  organisationId: user.organisationId,
   storeId: user.pointDeVenteId,
   storeName: user.pointDeVente ? user.pointDeVente.nom : null,
   cashRegisterId: user.caisseId,
@@ -151,6 +159,7 @@ const toApiCashRegister = (caisse) => ({
   id: caisse.id,
   name: caisse.nom,
   code: caisse.code,
+  organisationId: caisse.organisationId,
   storeId: caisse.pointDeVenteId,
   storeName: caisse.pointDeVente ? caisse.pointDeVente.nom : null,
   isActive: caisse.estActive,
@@ -160,6 +169,7 @@ const toApiProduct = (product) => ({
   id: product.id,
   name: product.nom,
   barcode: product.codeBarres,
+  organisationId: product.organisationId,
   category: product.categorie,
   purchasePrice: decimalToNumber(product.prixAchat),
   salePrice: decimalToNumber(product.prixVente),
@@ -171,6 +181,7 @@ const toApiProduct = (product) => ({
 const toApiCustomer = (client) => ({
   id: client.id,
   customerNumber: client.numeroClient,
+  organisationId: client.organisationId,
   name: client.nom,
   phone: client.telephone,
   email: client.email,
@@ -409,9 +420,10 @@ const getEmployeeCashRegisterId = (user) => {
   return user.caisseId || null;
 };
 
-const getDefaultCustomer = async (db = prisma) => {
-  const defaultCustomer = await db.client.findUnique({
+const getDefaultCustomer = async (user, db = prisma) => {
+  const defaultCustomer = await db.client.findFirst({
     where: {
+      organisationId: getOrganisationIdFromUser(user),
       numeroClient: 1,
     },
   });
@@ -426,24 +438,31 @@ const getDefaultCustomer = async (db = prisma) => {
   return defaultCustomer;
 };
 
-const ensureProductAndStoreExist = async (produitId, pointDeVenteId) => {
+const ensureProductAndStoreExist = async (user, produitId, pointDeVenteId) => {
+  const organisationId = getOrganisationIdFromUser(user);
   const [produit, pointDeVente] = await Promise.all([
     prisma.produit.findUnique({
-      where: { id: produitId },
+      where: {
+        id: produitId,
+      },
       select: {
         id: true,
+        organisationId: true,
         estActif: true,
       },
     }),
     prisma.pointDeVente.findUnique({
-      where: { id: pointDeVenteId },
+      where: {
+        id: pointDeVenteId,
+      },
       select: {
         id: true,
+        organisationId: true,
       },
     }),
   ]);
 
-  if (!produit) {
+  if (!produit || produit.organisationId !== organisationId) {
     throw createHttpError(404, "Product not found.");
   }
 
@@ -451,7 +470,7 @@ const ensureProductAndStoreExist = async (produitId, pointDeVenteId) => {
     throw createHttpError(400, "Product is inactive.");
   }
 
-  if (!pointDeVente) {
+  if (!pointDeVente || pointDeVente.organisationId !== organisationId) {
     throw createHttpError(404, "Store not found.");
   }
 };
@@ -611,10 +630,11 @@ const extractCityFromAddress = (address) => {
 
 const createStockMovement = async (
   db,
-  { productId, storeId, quantity, type, reason = null }
+  { organisationId, productId, storeId, quantity, type, reason = null }
 ) =>
   db.stockMovement.create({
     data: {
+      organisationId,
       produitId: productId,
       pointDeVenteId: storeId,
       quantite: quantity,
@@ -625,11 +645,12 @@ const createStockMovement = async (
 
 const restoreStockForProduct = async (
   db,
-  { productId, storeId, quantity, type, reason = null }
+  { organisationId, productId, storeId, quantity, type, reason = null }
 ) => {
   await db.stock.upsert({
     where: {
-      produitId_pointDeVenteId: {
+      organisationId_produitId_pointDeVenteId: {
+        organisationId,
         produitId: productId,
         pointDeVenteId: storeId,
       },
@@ -640,6 +661,7 @@ const restoreStockForProduct = async (
       },
     },
     create: {
+      organisationId,
       produitId: productId,
       pointDeVenteId: storeId,
       quantite: quantity,
@@ -647,6 +669,7 @@ const restoreStockForProduct = async (
   });
 
   await createStockMovement(db, {
+    organisationId,
     productId,
     storeId,
     quantity,
@@ -717,10 +740,18 @@ const login = async (req, res) => {
 };
 
 const getProducts = async (req, res) => {
+  const organisationId = getOrganisationIdFromUser(req.user);
   const { page, limit, skip } = getPaginationParams(req.query);
   const [total, products] = await Promise.all([
-    prisma.produit.count(),
+    prisma.produit.count({
+      where: {
+        organisationId,
+      },
+    }),
     prisma.produit.findMany({
+      where: {
+        organisationId,
+      },
       include: {
         fournisseur: {
           select: {
@@ -747,6 +778,7 @@ const getProducts = async (req, res) => {
 };
 
 const getProductByBarcode = async (req, res) => {
+  const organisationId = getOrganisationIdFromUser(req.user);
   const barcode = normalizeRequiredString(req.params.barcode);
 
   if (!barcode) {
@@ -769,8 +801,11 @@ const getProductByBarcode = async (req, res) => {
     storeId = employeeStoreId;
   }
 
-  const product = await prisma.produit.findUnique({
-    where: { codeBarres: barcode },
+  const product = await prisma.produit.findFirst({
+    where: {
+      organisationId,
+      codeBarres: barcode,
+    },
     select: {
       id: true,
       nom: true,
@@ -786,17 +821,20 @@ const getProductByBarcode = async (req, res) => {
 
   if (storeId) {
     const store = await prisma.pointDeVente.findUnique({
-      where: { id: storeId },
-      select: { id: true },
+      where: {
+        id: storeId,
+      },
+      select: { id: true, organisationId: true },
     });
 
-    if (!store) {
+    if (!store || store.organisationId !== organisationId) {
       throw createHttpError(404, "Store not found.");
     }
   }
 
   const stockAggregation = await prisma.stock.aggregate({
     where: {
+      organisationId,
       produitId: product.id,
       ...(storeId ? { pointDeVenteId: storeId } : {}),
     },
@@ -815,6 +853,7 @@ const getProductByBarcode = async (req, res) => {
 };
 
 const getStocks = async (req, res) => {
+  const organisationId = getOrganisationIdFromUser(req.user);
   const employeeStoreId = getEmployeeStoreId(req.user);
   const { page, limit, skip } = getPaginationParams(req.query);
 
@@ -824,13 +863,19 @@ const getStocks = async (req, res) => {
 
   const storesWhere =
     req.user.role === "ADMIN"
-      ? {}
+      ? {
+          organisationId,
+        }
       : {
+          organisationId,
           id: employeeStoreId,
         };
 
   const [products, stores, stockRows] = await Promise.all([
     prisma.produit.findMany({
+      where: {
+        organisationId,
+      },
       select: {
         id: true,
         nom: true,
@@ -850,8 +895,11 @@ const getStocks = async (req, res) => {
     prisma.stock.findMany({
       where:
         req.user.role === "ADMIN"
-          ? {}
+          ? {
+              organisationId,
+            }
           : {
+              organisationId,
               pointDeVenteId: employeeStoreId,
             },
       select: {
@@ -906,6 +954,7 @@ const getStocks = async (req, res) => {
 };
 
 const getStockAlerts = async (req, res) => {
+  const organisationId = getOrganisationIdFromUser(req.user);
   const employeeStoreId = getEmployeeStoreId(req.user);
 
   if (req.user.role === "EMPLOYE" && !employeeStoreId) {
@@ -914,6 +963,9 @@ const getStockAlerts = async (req, res) => {
 
   const [products, stores, stockRows] = await Promise.all([
     prisma.produit.findMany({
+      where: {
+        organisationId,
+      },
       select: {
         id: true,
         nom: true,
@@ -924,9 +976,12 @@ const getStockAlerts = async (req, res) => {
       where:
         req.user.role === "EMPLOYE"
           ? {
+              organisationId,
               id: employeeStoreId,
             }
-          : {},
+          : {
+              organisationId,
+            },
       select: {
         id: true,
         nom: true,
@@ -936,9 +991,12 @@ const getStockAlerts = async (req, res) => {
       where:
         req.user.role === "EMPLOYE"
           ? {
+              organisationId,
               pointDeVenteId: employeeStoreId,
             }
-          : {},
+          : {
+              organisationId,
+            },
       select: {
         id: true,
         produitId: true,
@@ -996,6 +1054,7 @@ const getStockAlerts = async (req, res) => {
 };
 
 const stockIn = async (req, res) => {
+  const organisationId = getOrganisationIdFromUser(req.user);
   const parsedInput = validateSchema(stockEntrySchema, {
     productId: req.body.productId,
     storeId: req.body.storeId,
@@ -1007,11 +1066,12 @@ const stockIn = async (req, res) => {
   const quantity = parsePositiveInteger(parsedInput.quantity);
   const reason = normalizeOptionalString(parsedInput.reason);
 
-  await ensureProductAndStoreExist(productId, storeId);
+  await ensureProductAndStoreExist(req.user, productId, storeId);
 
   const stock = await prisma.stock.upsert({
     where: {
-      produitId_pointDeVenteId: {
+      organisationId_produitId_pointDeVenteId: {
+        organisationId,
         produitId: productId,
         pointDeVenteId: storeId,
       },
@@ -1022,6 +1082,7 @@ const stockIn = async (req, res) => {
       },
     },
     create: {
+      organisationId,
       produitId: productId,
       pointDeVenteId: storeId,
       quantite: quantity,
@@ -1043,6 +1104,7 @@ const stockIn = async (req, res) => {
   });
 
   await createStockMovement(prisma, {
+    organisationId,
     productId,
     storeId,
     quantity,
@@ -1054,6 +1116,7 @@ const stockIn = async (req, res) => {
 };
 
 const stockCorrection = async (req, res) => {
+  const organisationId = getOrganisationIdFromUser(req.user);
   const parsedInput = validateSchema(stockCorrectionSchema, {
     productId: req.body.productId,
     storeId: req.body.storeId,
@@ -1065,12 +1128,13 @@ const stockCorrection = async (req, res) => {
   const quantity = parseNonNegativeInteger(parsedInput.quantity);
   const reason = normalizeOptionalString(parsedInput.reason);
 
-  await ensureProductAndStoreExist(productId, storeId);
+  await ensureProductAndStoreExist(req.user, productId, storeId);
 
   const stock = await prisma.$transaction(async (tx) => {
     const existingStock = await tx.stock.findUnique({
       where: {
-        produitId_pointDeVenteId: {
+        organisationId_produitId_pointDeVenteId: {
+          organisationId,
           produitId: productId,
           pointDeVenteId: storeId,
         },
@@ -1085,7 +1149,8 @@ const stockCorrection = async (req, res) => {
 
     const updatedStock = await tx.stock.upsert({
       where: {
-        produitId_pointDeVenteId: {
+        organisationId_produitId_pointDeVenteId: {
+          organisationId,
           produitId: productId,
           pointDeVenteId: storeId,
         },
@@ -1094,6 +1159,7 @@ const stockCorrection = async (req, res) => {
         quantite: quantity,
       },
       create: {
+        organisationId,
         produitId: productId,
         pointDeVenteId: storeId,
         quantite: quantity,
@@ -1115,6 +1181,7 @@ const stockCorrection = async (req, res) => {
     });
 
     await createStockMovement(tx, {
+      organisationId,
       productId,
       storeId,
       quantity: quantityDelta,
@@ -1129,6 +1196,7 @@ const stockCorrection = async (req, res) => {
 };
 
 const createSale = async (req, res) => {
+  const organisationId = getOrganisationIdFromUser(req.user);
   if (isEmptyRequestBody(req.body)) {
     throw createHttpError(400, "Request body is empty", "BAD_REQUEST");
   }
@@ -1263,19 +1331,23 @@ const createSale = async (req, res) => {
     const sale = await prisma.$transaction(async (tx) => {
     const customer =
       requestedCustomerId !== null
-        ? await tx.client.findUnique({
+        ? await tx.client.findFirst({
             where: {
+              organisationId,
               id: requestedCustomerId,
             },
           })
-        : await getDefaultCustomer(tx);
+        : await getDefaultCustomer(req.user, tx);
 
     if (!customer) {
       throw createHttpError(404, "Customer not found.");
     }
 
-    const pointDeVente = await tx.pointDeVente.findUnique({
-      where: { id: storeId },
+    const pointDeVente = await tx.pointDeVente.findFirst({
+      where: {
+        organisationId,
+        id: storeId,
+      },
       select: { id: true },
     });
 
@@ -1283,8 +1355,11 @@ const createSale = async (req, res) => {
       throw createHttpError(404, "Store not found.");
     }
 
-    const caisse = await tx.caisse.findUnique({
-      where: { id: cashRegisterId },
+    const caisse = await tx.caisse.findFirst({
+      where: {
+        organisationId,
+        id: cashRegisterId,
+      },
       select: {
         id: true,
         nom: true,
@@ -1309,8 +1384,11 @@ const createSale = async (req, res) => {
       throw createHttpError(400, "The selected cash register is inactive.");
     }
 
-    const utilisateur = await tx.utilisateur.findUnique({
-      where: { id: userId },
+    const utilisateur = await tx.utilisateur.findFirst({
+      where: {
+        organisationId,
+        id: userId,
+      },
       select: {
         id: true,
         role: true,
@@ -1342,6 +1420,7 @@ const createSale = async (req, res) => {
     const productIds = items.map((item) => item.productId);
     const produits = await tx.produit.findMany({
       where: {
+        organisationId,
         id: {
           in: productIds,
         },
@@ -1366,6 +1445,7 @@ const createSale = async (req, res) => {
 
     const stocks = await tx.stock.findMany({
       where: {
+        organisationId,
         pointDeVenteId: storeId,
         produitId: {
           in: productIds,
@@ -1408,6 +1488,7 @@ const createSale = async (req, res) => {
       total = total.plus(sousTotal);
 
       lignesData.push({
+        organisationId,
         produitId: item.productId,
         quantite: item.quantity,
         prixUnitaire,
@@ -1433,6 +1514,7 @@ const createSale = async (req, res) => {
 
     const createdSale = await tx.vente.create({
       data: {
+        organisationId,
         numeroTicket: generateTicketNumber(storeId),
         total,
         paymentMethod,
@@ -1456,6 +1538,7 @@ const createSale = async (req, res) => {
 
       const updatedStock = await tx.stock.updateMany({
         where: {
+          organisationId,
           produitId: item.productId,
           pointDeVenteId: storeId,
           quantite: {
@@ -1474,6 +1557,7 @@ const createSale = async (req, res) => {
       }
 
       await createStockMovement(tx, {
+        organisationId,
         productId: item.productId,
         storeId,
         quantity: -item.quantity,
@@ -1534,6 +1618,7 @@ const createSale = async (req, res) => {
 };
 
 const getSales = async (req, res) => {
+  const organisationId = getOrganisationIdFromUser(req.user);
   const requestedPaymentMethod = normalizeOptionalString(req.query.paymentMethod);
   const paymentMethodFilter = requestedPaymentMethod
     ? normalizePaymentMethod(requestedPaymentMethod)
@@ -1544,6 +1629,7 @@ const getSales = async (req, res) => {
   }
 
   const where = {
+    organisationId,
     ...(req.user.role === "EMPLOYE"
       ? {
           utilisateurId: req.user.id,
@@ -1667,6 +1753,7 @@ const getSales = async (req, res) => {
 };
 
 const cancelSale = async (req, res) => {
+  const organisationId = getOrganisationIdFromUser(req.user);
   const saleId = parsePositiveInteger(req.params.id);
 
   if (Number.isNaN(saleId)) {
@@ -1674,8 +1761,11 @@ const cancelSale = async (req, res) => {
   }
 
   const sale = await prisma.$transaction(async (tx) => {
-    const existingSale = await tx.vente.findUnique({
-      where: { id: saleId },
+    const existingSale = await tx.vente.findFirst({
+      where: {
+        organisationId,
+        id: saleId,
+      },
       include: {
         lignes: {
           select: {
@@ -1712,6 +1802,7 @@ const cancelSale = async (req, res) => {
 
     for (const ligne of existingSale.lignes) {
       await restoreStockForProduct(tx, {
+        organisationId,
         productId: ligne.produitId,
         storeId: existingSale.pointDeVenteId,
         quantity: ligne.quantite,
@@ -1740,6 +1831,7 @@ const cancelSale = async (req, res) => {
 };
 
 const returnSale = async (req, res) => {
+  const organisationId = getOrganisationIdFromUser(req.user);
   const saleId = parsePositiveInteger(req.params.id);
 
   if (Number.isNaN(saleId)) {
@@ -1750,8 +1842,11 @@ const returnSale = async (req, res) => {
   const reason = normalizeOptionalString(req.body.reason);
 
   const sale = await prisma.$transaction(async (tx) => {
-    const existingSale = await tx.vente.findUnique({
-      where: { id: saleId },
+    const existingSale = await tx.vente.findFirst({
+      where: {
+        organisationId,
+        id: saleId,
+      },
       include: {
         lignes: {
           select: {
@@ -1813,6 +1908,7 @@ const returnSale = async (req, res) => {
     for (const item of items) {
       await tx.retour.create({
         data: {
+          organisationId,
           venteId: existingSale.id,
           produitId: item.productId,
           quantite: item.quantity,
@@ -1821,6 +1917,7 @@ const returnSale = async (req, res) => {
       });
 
       await restoreStockForProduct(tx, {
+        organisationId,
         productId: item.productId,
         storeId: existingSale.pointDeVenteId,
         quantity: item.quantity,
@@ -1859,10 +1956,12 @@ const returnSale = async (req, res) => {
 };
 
 const getCustomers = async (req, res) => {
+  const organisationId = getOrganisationIdFromUser(req.user);
   const search = normalizeRequiredString(req.query.search || "");
   const numericSearch = Number(search);
   const where = search
     ? {
+        organisationId,
         OR: [
           {
             nom: {
@@ -1891,7 +1990,9 @@ const getCustomers = async (req, res) => {
             : []),
         ],
       }
-    : {};
+    : {
+        organisationId,
+      };
 
   const customers = await prisma.client.findMany({
     where,
@@ -1915,6 +2016,7 @@ const getCustomers = async (req, res) => {
 
 const createCustomer = async (req, res) => {
   try {
+    const organisationId = getOrganisationIdFromUser(req.user);
     const parsedInput = validateSchema(customerCreateSchema, {
       name: req.body.name || req.body.nom,
       phone: req.body.phone || req.body.telephone,
@@ -1925,10 +2027,11 @@ const createCustomer = async (req, res) => {
     const email = normalizeOptionalString(parsedInput.email);
 
     const newCustomer = await prisma.$transaction(async (tx) => {
-      await getDefaultCustomer(tx);
+      await getDefaultCustomer(req.user, tx);
 
       const lastCustomer = await tx.client.findFirst({
         where: {
+          organisationId,
           numeroClient: {
             gt: 1,
           },
@@ -1952,6 +2055,7 @@ const createCustomer = async (req, res) => {
 
       return tx.client.create({
         data: {
+          organisationId,
           numeroClient: nextNumero,
           nom: nom.trim(),
           telephone: telephone || null,
@@ -1973,14 +2077,16 @@ const createCustomer = async (req, res) => {
 };
 
 const getCustomerCredit = async (req, res) => {
+  const organisationId = getOrganisationIdFromUser(req.user);
   const customerId = parsePositiveInteger(req.params.id);
 
   if (Number.isNaN(customerId)) {
     throw createHttpError(400, "customer id must be a valid positive integer.");
   }
 
-  const customer = await prisma.client.findUnique({
+  const customer = await prisma.client.findFirst({
     where: {
+      organisationId,
       id: customerId,
     },
   });
@@ -1998,14 +2104,16 @@ const getCustomerCredit = async (req, res) => {
 };
 
 const getCustomerById = async (req, res) => {
+  const organisationId = getOrganisationIdFromUser(req.user);
   const customerId = parsePositiveInteger(req.params.id);
 
   if (Number.isNaN(customerId)) {
     throw createHttpError(400, "customer id must be a valid positive integer.");
   }
 
-  const customer = await prisma.client.findUnique({
+  const customer = await prisma.client.findFirst({
     where: {
+      organisationId,
       id: customerId,
     },
     include: {
@@ -2038,14 +2146,16 @@ const getCustomerById = async (req, res) => {
 };
 
 const getCustomerSales = async (req, res) => {
+  const organisationId = getOrganisationIdFromUser(req.user);
   const customerId = parsePositiveInteger(req.params.id);
 
   if (Number.isNaN(customerId)) {
     throw createHttpError(400, "customer id must be a valid positive integer.");
   }
 
-  const customer = await prisma.client.findUnique({
+  const customer = await prisma.client.findFirst({
     where: {
+      organisationId,
       id: customerId,
     },
     select: {
@@ -2059,6 +2169,7 @@ const getCustomerSales = async (req, res) => {
 
   const sales = await prisma.vente.findMany({
     where: {
+      organisationId,
       clientId: customerId,
     },
     include: {
@@ -2093,6 +2204,7 @@ const getCustomerSales = async (req, res) => {
 };
 
 const payCustomerCredit = async (req, res) => {
+  const organisationId = getOrganisationIdFromUser(req.user);
   const customerId = parsePositiveInteger(req.params.id);
 
   if (Number.isNaN(customerId)) {
@@ -2108,8 +2220,9 @@ const payCustomerCredit = async (req, res) => {
   const note = normalizeOptionalString(parsedInput.note);
 
   const updatedCustomer = await prisma.$transaction(async (tx) => {
-    const customer = await tx.client.findUnique({
+    const customer = await tx.client.findFirst({
       where: {
+        organisationId,
         id: customerId,
       },
     });
@@ -2127,6 +2240,7 @@ const payCustomerCredit = async (req, res) => {
 
     await tx.paiementClient.create({
       data: {
+        organisationId,
         clientId: customer.id,
         montant: amount,
         note: note || "Paiement credit",
@@ -2164,14 +2278,16 @@ const payCustomerCredit = async (req, res) => {
 };
 
 const deleteCustomer = async (req, res) => {
+  const organisationId = getOrganisationIdFromUser(req.user);
   const customerId = parsePositiveInteger(req.params.id);
 
   if (Number.isNaN(customerId)) {
     throw createHttpError(400, "customer id must be a valid positive integer.");
   }
 
-  const customer = await prisma.client.findUnique({
+  const customer = await prisma.client.findFirst({
     where: {
+      organisationId,
       id: customerId,
     },
     include: {
@@ -2222,7 +2338,11 @@ const deleteCustomer = async (req, res) => {
 };
 
 const getSuppliers = async (req, res) => {
+  const organisationId = getOrganisationIdFromUser(req.user);
   const suppliers = await prisma.fournisseur.findMany({
+    where: {
+      organisationId,
+    },
     include: {
       _count: {
         select: {
@@ -2248,6 +2368,7 @@ const getSuppliers = async (req, res) => {
 };
 
 const getReports = async (req, res) => {
+  const organisationId = getOrganisationIdFromUser(req.user);
   const period = normalizeRequiredString(req.query.period).toLowerCase();
   const range = getDateRange(period);
 
@@ -2257,6 +2378,7 @@ const getReports = async (req, res) => {
 
   const sales = await prisma.vente.findMany({
     where: {
+      organisationId,
       dateVente: {
         gte: range.startDate,
         lte: range.endDate,
@@ -2357,6 +2479,7 @@ const getReports = async (req, res) => {
 };
 
 const getAnalytics = async (req, res) => {
+  const organisationId = getOrganisationIdFromUser(req.user);
   const period = normalizeRequiredString(req.query.period || "week").toLowerCase();
   const range = getAnalyticsDateRange(period);
 
@@ -2366,6 +2489,9 @@ const getAnalytics = async (req, res) => {
 
   const [stores, sales] = await Promise.all([
     prisma.pointDeVente.findMany({
+      where: {
+        organisationId,
+      },
       select: {
         id: true,
         nom: true,
@@ -2374,6 +2500,7 @@ const getAnalytics = async (req, res) => {
     }),
     prisma.vente.findMany({
       where: {
+        organisationId,
         status: "completed",
         dateVente: {
           gte: range.startDate,
@@ -2538,7 +2665,11 @@ const getAnalytics = async (req, res) => {
 };
 
 const getUsers = async (req, res) => {
+  const organisationId = getOrganisationIdFromUser(req.user);
   const users = await prisma.utilisateur.findMany({
+    where: {
+      organisationId,
+    },
     include: {
       pointDeVente: {
         select: {
@@ -2572,6 +2703,7 @@ const getUsers = async (req, res) => {
 };
 
 const getStores = async (req, res) => {
+  const organisationId = getOrganisationIdFromUser(req.user);
   const employeeStoreId = getEmployeeStoreId(req.user);
   const todayStart = getStartOfDay(new Date());
   const todayEnd = getEndOfDay(new Date());
@@ -2585,9 +2717,12 @@ const getStores = async (req, res) => {
       where:
         req.user.role === "EMPLOYE" && employeeStoreId
           ? {
+              organisationId,
               id: employeeStoreId,
             }
-          : {},
+          : {
+              organisationId,
+            },
       include: {
         _count: {
           select: {
@@ -2602,6 +2737,7 @@ const getStores = async (req, res) => {
     }),
     prisma.vente.findMany({
       where: {
+        organisationId,
         dateVente: {
           gte: todayStart,
           lte: todayEnd,
@@ -2668,6 +2804,7 @@ const toggleAutoReportStatus = async (req, res) => {
 };
 
 const getCashRegisters = async (req, res) => {
+  const organisationId = getOrganisationIdFromUser(req.user);
   const requestedStoreId = parseOptionalPositiveInteger(req.query.storeId);
   const employeeStoreId = getEmployeeStoreId(req.user);
 
@@ -2680,13 +2817,15 @@ const getCashRegisters = async (req, res) => {
   }
 
   const storeId = req.user.role === "EMPLOYE" ? employeeStoreId : requestedStoreId;
-
   const cashRegisters = await prisma.caisse.findMany({
     where: storeId
       ? {
+          organisationId,
           pointDeVenteId: storeId,
         }
-      : {},
+      : {
+          organisationId,
+        },
     include: {
       pointDeVente: {
         select: {

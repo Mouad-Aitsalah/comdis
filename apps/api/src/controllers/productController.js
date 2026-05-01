@@ -1,5 +1,6 @@
 const prisma = require("../config/prisma");
 const { validateSchema } = require("../utils/validation");
+const { getOrganisationIdFromUser } = require("../utils/organisationScope");
 const {
   productCreateSchema,
   productUpdateSchema,
@@ -94,7 +95,11 @@ const productInclude = {
 
 const getAllProducts = async (req, res) => {
   try {
+    const organisationId = getOrganisationIdFromUser(req.user);
     const produits = await prisma.produit.findMany({
+      where: {
+        organisationId,
+      },
       include: productInclude,
       orderBy: {
         id: "desc",
@@ -114,6 +119,7 @@ const getAllProducts = async (req, res) => {
 
 const getProductById = async (req, res) => {
   try {
+    const organisationId = getOrganisationIdFromUser(req.user);
     const productId = parseId(req.params.id);
 
     if (!productId) {
@@ -122,8 +128,11 @@ const getProductById = async (req, res) => {
       });
     }
 
-    const produit = await prisma.produit.findUnique({
-      where: { id: productId },
+    const produit = await prisma.produit.findFirst({
+      where: {
+        organisationId,
+        id: productId,
+      },
       include: productInclude,
     });
 
@@ -146,6 +155,7 @@ const getProductById = async (req, res) => {
 
 const createProduct = async (req, res) => {
   try {
+    const organisationId = getOrganisationIdFromUser(req.user);
     const {
       codeBarres,
       nom,
@@ -228,8 +238,11 @@ const createProduct = async (req, res) => {
       });
     }
 
-    const existingProduct = await prisma.produit.findUnique({
-      where: { codeBarres: normalizedCodeBarres },
+    const existingProduct = await prisma.produit.findFirst({
+      where: {
+        organisationId,
+        codeBarres: normalizedCodeBarres,
+      },
     });
 
     if (existingProduct) {
@@ -239,8 +252,11 @@ const createProduct = async (req, res) => {
     }
 
     if (parsedFournisseurId) {
-      const fournisseur = await prisma.fournisseur.findUnique({
-        where: { id: parsedFournisseurId },
+      const fournisseur = await prisma.fournisseur.findFirst({
+        where: {
+          organisationId,
+          id: parsedFournisseurId,
+        },
       });
 
       if (!fournisseur) {
@@ -252,6 +268,9 @@ const createProduct = async (req, res) => {
 
     const produit = await prisma.$transaction(async (tx) => {
       const pointsDeVente = await tx.pointDeVente.findMany({
+        where: {
+          organisationId,
+        },
         select: {
           id: true,
         },
@@ -275,6 +294,7 @@ const createProduct = async (req, res) => {
 
       const produitCree = await tx.produit.create({
         data: {
+          organisationId,
           codeBarres: normalizedCodeBarres,
           nom: normalizedNom,
           categorie: normalizedCategorie,
@@ -292,6 +312,7 @@ const createProduct = async (req, res) => {
 
       await tx.stock.createMany({
         data: pointsDeVente.map((pointDeVente) => ({
+          organisationId,
           produitId: produitCree.id,
           pointDeVenteId: pointDeVente.id,
           quantite: quantityByStoreId.get(pointDeVente.id) ?? 0,
@@ -325,6 +346,7 @@ const createProduct = async (req, res) => {
 
 const updateProduct = async (req, res) => {
   try {
+    const organisationId = getOrganisationIdFromUser(req.user);
     const productId = parseId(req.params.id);
 
     if (!productId) {
@@ -333,8 +355,11 @@ const updateProduct = async (req, res) => {
       });
     }
 
-    const existingProduct = await prisma.produit.findUnique({
-      where: { id: productId },
+    const existingProduct = await prisma.produit.findFirst({
+      where: {
+        organisationId,
+        id: productId,
+      },
     });
 
     if (!existingProduct) {
@@ -442,8 +467,11 @@ const updateProduct = async (req, res) => {
       }
 
       if (parsedFournisseurId) {
-        const fournisseur = await prisma.fournisseur.findUnique({
-          where: { id: parsedFournisseurId },
+        const fournisseur = await prisma.fournisseur.findFirst({
+          where: {
+            organisationId,
+            id: parsedFournisseurId,
+          },
         });
 
         if (!fournisseur) {
@@ -459,6 +487,7 @@ const updateProduct = async (req, res) => {
     if (data.codeBarres) {
       const productWithSameBarcode = await prisma.produit.findFirst({
         where: {
+          organisationId,
           codeBarres: data.codeBarres,
           id: {
             not: productId,
@@ -499,6 +528,7 @@ const updateProduct = async (req, res) => {
 
 const deleteProduct = async (req, res) => {
   try {
+    const organisationId = getOrganisationIdFromUser(req.user);
     const productId = parseId(req.params.id);
 
     if (!productId) {
@@ -507,8 +537,11 @@ const deleteProduct = async (req, res) => {
       });
     }
 
-    const existingProduct = await prisma.produit.findUnique({
-      where: { id: productId },
+    const existingProduct = await prisma.produit.findFirst({
+      where: {
+        organisationId,
+        id: productId,
+      },
       include: {
         _count: {
           select: {
